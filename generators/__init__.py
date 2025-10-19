@@ -2,16 +2,8 @@
 Content generation utilities.
 """
 
-from .features import (
-    MANUFACTURING_FEATURES,
-    CRITICAL_DIMENSIONS,
-    TOLERANCE_CLASSES,
-    SURFACE_FINISH_STANDARDS,
-)
+from .features import features_dict
 
 __all__ = [
-    'MANUFACTURING_FEATURES',
-    'CRITICAL_DIMENSIONS',
-    'TOLERANCE_CLASSES',
-    'SURFACE_FINISH_STANDARDS',
+    'features_dict',
 ]

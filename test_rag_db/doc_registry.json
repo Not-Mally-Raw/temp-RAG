@@ -1,0 +1,20 @@
+{
+  "840cd8712af939d5": {
+    "filename": "test_doc.pdf",
+    "processed_at": "2025-10-19T15:24:38.910828",
+    "chunks": {
+      "text_chunks": 46,
+      "implicit_rules": 1,
+      "keyword_rules": 45,
+      "hybrid_rules": 46,
+      "processing_method": "hybrid"
+    },
+    "processing_method": "hybrid",
+    "stats": {
+      "keyword_based_rules": 45,
+      "implicit_rules": 1,
+      "hybrid_rules": 46,
+      "documents_processed": 0
+    }
+  }
+}

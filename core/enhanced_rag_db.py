@@ -19,7 +19,7 @@ from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-from langchain.memory import ConversationBufferWindowMemory
+# from langchain.memory import ConversationBufferWindowMemory  # Not used, commented out
 from langchain_core.retrievers import BaseRetriever
 
 # Import our existing extractors
@@ -237,12 +237,12 @@ class EnhancedManufacturingRAG:
             persist_directory=persist_path
         )
         
-        # Enhanced memory for conversation
-        self.memory = ConversationBufferWindowMemory(
-            k=10,  # Keep last 10 exchanges
-            return_messages=True,
-            memory_key="chat_history"
-        )
+        # Enhanced memory for conversation (disabled for now)
+        # self.memory = ConversationBufferWindowMemory(
+        #     k=10,  # Keep last 10 exchanges
+        #     return_messages=True,
+        #     memory_key="chat_history"
+        # )
         
         # Document registry
         self.doc_registry: Dict[str, Dict[str, Any]] = {}
@@ -308,9 +308,24 @@ class EnhancedManufacturingRAG:
         """Add documents to the vector store."""
         if documents:
             texts = [doc.page_content for doc in documents]
-            metadatas = [doc.metadata for doc in documents]
+            # Filter complex metadata - ChromaDB only supports scalar types
+            metadatas = []
+            for doc in documents:
+                filtered_metadata = {}
+                for key, value in doc.metadata.items():
+                    # Only keep scalar types
+                    if isinstance(value, (str, int, float, bool)) or value is None:
+                        filtered_metadata[key] = value
+                    elif isinstance(value, list):
+                        # Convert lists to comma-separated strings
+                        filtered_metadata[key] = ', '.join(str(v) for v in value if v)
+                    else:
+                        # Skip other complex types
+                        continue
+                metadatas.append(filtered_metadata)
+            
             self.vectorstore.add_texts(texts, metadatas)
-            self.vectorstore.persist()
+            # Note: Newer versions of Chroma auto-persist, no need to call persist()
     
     def retrieve_for_rule_generation(
         self,
@@ -501,12 +516,18 @@ class EnhancedManufacturingRAG:
     
     def get_database_stats(self) -> Dict[str, Any]:
         """Get statistics about the knowledge base."""
+        total_chunks = 0
+        for doc in self.doc_registry.values():
+            chunks = doc.get("chunks", {})
+            # Sum only numeric values in chunks dictionary
+            for key, value in chunks.items():
+                if isinstance(value, (int, float)):
+                    total_chunks += value
+        
         stats = {
             "total_documents": len(self.doc_registry),
             "processed_files": [doc["filename"] for doc in self.doc_registry.values()],
-            "total_chunks": sum(
-                sum(doc["chunks"].values()) for doc in self.doc_registry.values()
-            ),
+            "total_chunks": total_chunks,
             "embedding_model": self.embeddings.model_name,
             "last_updated": max(
                 (doc["processed_at"] for doc in self.doc_registry.values()),

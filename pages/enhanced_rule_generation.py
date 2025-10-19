@@ -2,20 +2,41 @@
 Enhanced rule generation with RAG integration
 """
 
-from groq import Groq
-from groq.types.chat import ChatCompletion as GroqChatCompletion
+# Optional LLM API imports (not required for core RAG functionality)
+try:
+    from groq import Groq
+    from groq.types.chat import ChatCompletion as GroqChatCompletion
+    GROQ_AVAILABLE = True
+except ImportError:
+    GROQ_AVAILABLE = False
+    Groq = None
+    GroqChatCompletion = None
+
+try:
+    from cerebras.cloud.sdk import Cerebras
+    from cerebras.cloud.sdk.types.chat import ChatCompletion as CerebrasChatCompletion
+    CEREBRAS_AVAILABLE = True
+except ImportError:
+    CEREBRAS_AVAILABLE = False
+    Cerebras = None
+    CerebrasChatCompletion = None
+
 import pandas as pd
 from tqdm import tqdm
 from generators.features import features_dict
 import time
-from cerebras.cloud.sdk import Cerebras
-from cerebras.cloud.sdk.types.chat import ChatCompletion as CerebrasChatCompletion
 from typing import Any
 import streamlit as st
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 import json
 
-from core.rag_pipeline_integration import init_rag_pipeline, display_rag_stats, add_rag_search_interface
+try:
+    from core.rag_pipeline_integration import init_rag_pipeline, display_rag_stats, add_rag_search_interface
+except ImportError:
+    # Fallback if rag_pipeline_integration doesn't have these functions
+    init_rag_pipeline = None
+    display_rag_stats = None
+    add_rag_search_interface = None
 
 def _create_enhanced_prompt_with_rag(rule_type: str|None, rule_text: str, rag_context: dict) -> str:
     """Create an enhanced prompt with RAG context for better rule parsing."""
@@ -220,10 +241,22 @@ with tab2:
 
 # Only show processing once we have a valid DataFrame
 if has_data and isinstance(rules_df, pd.DataFrame) and not rules_df.empty:
-    parser_choice = st.selectbox("Select Parser", ["Enhanced Groq with RAG", "Enhanced Cerebras with RAG", "Standard Groq", "Standard Cerebras"])
+    # Check available parsers
+    available_parsers = []
+    if GROQ_AVAILABLE:
+        available_parsers.extend(["Enhanced Groq with RAG", "Standard Groq"])
+    if CEREBRAS_AVAILABLE:
+        available_parsers.extend(["Enhanced Cerebras with RAG", "Standard Cerebras"])
+    
+    if not available_parsers:
+        st.error("No LLM APIs available. Install groq or cerebras packages to use rule generation.")
+        st.info("The core RAG system works without these. This page requires external LLM APIs for rule generation.")
+        st.stop()
+    
+    parser_choice = st.selectbox("Select Parser", available_parsers)
     model = None
 
-    if "Groq" in parser_choice:
+    if "Groq" in parser_choice and GROQ_AVAILABLE:
         if "Enhanced" in parser_choice:
             parser = EnhancedGroqParser()
         else:
@@ -235,12 +268,15 @@ if has_data and isinstance(rules_df, pd.DataFrame) and not rules_df.empty:
             "qwen/qwen3-32b",
             "meta-llama/llama-guard-4-12b",
         ])
-    else:
+    elif "Cerebras" in parser_choice and CEREBRAS_AVAILABLE:
         if "Enhanced" in parser_choice:
             parser = EnhancedCerebrasParser()
         else:
             from pages.rule_generation import CerebrasParser
             parser = CerebrasParser()
+    else:
+        st.error("Selected parser not available")
+        st.stop()
         model = st.selectbox("Select Cerebras Model", [
             "llama-4-scout-17b-16e-instruct",
             "qwen-3-32b",

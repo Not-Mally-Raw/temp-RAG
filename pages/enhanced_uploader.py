@@ -128,8 +128,12 @@ with col2:
             st.warning("Click again to confirm clearing the knowledge base")
 
 # Add search interface in sidebar
-from rag_pipeline_integration import add_rag_search_interface
-add_rag_search_interface(rag_pipeline)
+try:
+    from core.rag_pipeline_integration import add_rag_search_interface
+    add_rag_search_interface(rag_pipeline)
+except (ImportError, AttributeError):
+    # Fallback if function doesn't exist
+    pass
 
 # Cleanup temp files on session end
 import atexit

@@ -426,10 +426,11 @@ with col3:
     - Enhanced rule examples
     """)
 
-st.markdown("""
+from datetime import datetime as dt
+st.markdown(f"""
 <div style='text-align: center; padding: 20px; color: #666;'>
 🎯 Enhanced RAG System Demonstration - Showing real improvements in manufacturing rule generation<br>
-Generated on: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | 
+Generated on: {dt.now().strftime('%Y-%m-%d %H:%M:%S')} | 
 📁 Sample outputs: /opt/anaconda3/sample_outputs/
 </div>
-""".format(datetime=datetime), unsafe_allow_html=True)
+""", unsafe_allow_html=True)
