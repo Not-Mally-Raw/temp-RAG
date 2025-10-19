@@ -16,8 +16,8 @@ import numpy as np
 from sentence_transformers import SentenceTransformer
 from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
-from langchain.text_splitter import RecursiveCharacterTextSplitter
-from langchain.docstore.document import Document
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
 
 # Import the implicit rule extractor
 from core.implicit_rule_extractor import ImplicitRuleExtractor, ImplicitRule
@@ -195,11 +195,15 @@ class UniversalManufacturingRAG(EnhancedManufacturingRAG):
         text_metadata = DocumentMetadata(
             doc_id=f"{doc_id}_keyword",
             source_file=filename,
-            doc_type="text",
-            rule_extraction_method="keyword_based"
+            doc_type="text"
         )
         
-        return self.text_splitter.split_with_structure(text, text_metadata)
+        # Add rule_extraction_method to metadata after creation
+        docs = self.text_splitter.split_with_structure(text, text_metadata)
+        for doc in docs:
+            doc.metadata['rule_extraction_method'] = 'keyword_based'
+        
+        return docs
     
     def _process_with_implicit_extraction(self, text: str, filename: str, doc_id: str) -> List[Document]:
         """Process document using implicit rule extraction."""

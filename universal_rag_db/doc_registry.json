@@ -1,0 +1,38 @@
+{
+  "840cd8712af939d5": {
+    "filename": "Texas_Instruments.pdf",
+    "processed_at": "2025-10-19T15:16:17.816036",
+    "chunks": {
+      "text_chunks": 46,
+      "implicit_rules": 1,
+      "keyword_rules": 45,
+      "hybrid_rules": 46,
+      "processing_method": "hybrid"
+    },
+    "processing_method": "hybrid",
+    "stats": {
+      "keyword_based_rules": 45,
+      "implicit_rules": 1,
+      "hybrid_rules": 46,
+      "documents_processed": 0
+    }
+  },
+  "664eee4c6bb797ec": {
+    "filename": "Northrop Grumman Quality Assurance - Quality standards.pdf",
+    "processed_at": "2025-10-19T15:22:53.365229",
+    "chunks": {
+      "text_chunks": 244,
+      "implicit_rules": 119,
+      "keyword_rules": 127,
+      "hybrid_rules": 244,
+      "processing_method": "hybrid"
+    },
+    "processing_method": "hybrid",
+    "stats": {
+      "keyword_based_rules": 127,
+      "implicit_rules": 119,
+      "hybrid_rules": 244,
+      "documents_processed": 0
+    }
+  }
+}
