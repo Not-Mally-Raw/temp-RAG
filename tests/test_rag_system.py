@@ -16,8 +16,7 @@ class TestEnhancedRAGDB:
     def rag_system(self):
         """Create a test RAG system instance"""
         return EnhancedManufacturingRAG(
-            collection_name="test_manufacturing",
-            persist_directory="./test_chroma_db"
+            persist_path="./test_chroma_db"
         )
     
     @pytest.fixture
@@ -163,8 +162,7 @@ class TestIntegration:
     def integrated_system(self):
         """Create integrated RAG system with rule extractor"""
         rag = EnhancedManufacturingRAG(
-            collection_name="test_integration",
-            persist_directory="./test_integration_db"
+            persist_path="./test_integration_db"
         )
         extractor = ImplicitRuleExtractor()
         return rag, extractor

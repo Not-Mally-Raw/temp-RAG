@@ -55,7 +55,7 @@ class UniversalRAGTestSimulator:
         )
         
         st.title("🧪 Universal RAG Testing Simulator")
-        st.subtitle("Test document processing capabilities with vague content and no manufacturing keywords")
+        st.subheader("Test document processing capabilities with vague content and no manufacturing keywords")
         
         # Sidebar configuration
         self.setup_sidebar()

@@ -53,8 +53,7 @@ class RAGAnalyticsApp:
             with st.spinner("Initializing Enhanced RAG System..."):
                 try:
                     self.rag_system = EnhancedManufacturingRAG(
-                        collection_name="manufacturing_enhanced",
-                        persist_directory="./chroma_enhanced_db"
+                        persist_path="./chroma_enhanced_db"
                     )
                     self.rule_extractor = ImplicitRuleExtractor()
                     st.session_state.rag_initialized = True

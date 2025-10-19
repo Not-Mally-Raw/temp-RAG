@@ -29,13 +29,10 @@ def main():
     # Navigation options
     pages = {
         "🏠 Home": "home",
+        "✅ RAG Pipeline Checklist": "rag_checklist",
         "🧪 Testing Simulator": "testing_simulator", 
         "🏭 Industry Document Testing": "industry_testing",
-        "📊 Analytics Dashboard": "analytics",
-        "📄 Document Upload": "enhanced_uploader",
-        "🎯 Classification": "enhanced_classification",
-        "📋 Rule Generation": "enhanced_rule_generation",
-        "📈 RAG Results": "enhanced_rag_results"
+        "📊 Analytics Dashboard": "analytics"
     }
     
     selected_page = st.sidebar.selectbox(
@@ -49,6 +46,9 @@ def main():
     # Page routing
     if page_key == "home":
         show_home_page()
+    elif page_key == "rag_checklist":
+        import pages.rag_checklist as rag_checklist
+        rag_checklist.main()
     elif page_key == "testing_simulator":
         import pages.testing_simulator as testing_sim
         testing_sim.main()
@@ -59,24 +59,12 @@ def main():
         import pages.analytics as analytics
         app = analytics.RAGAnalyticsApp()
         app.run()
-    elif page_key == "enhanced_uploader":
-        import pages.enhanced_uploader
-        # Module is executed on import
-    elif page_key == "enhanced_classification":
-        import pages.enhanced_classification
-        # Module is executed on import
-    elif page_key == "enhanced_rule_generation":
-        import pages.enhanced_rule_generation
-        # Module is executed on import
-    elif page_key == "enhanced_rag_results":
-        import pages.enhanced_rag_results
-        # Module is executed on import
 
 def show_home_page():
     """Show the home page with system overview."""
     
     st.title("🚀 Universal RAG System for Manufacturing Intelligence")
-    st.subtitle("Advanced document processing for vague content without manufacturing keywords")
+    st.subheader("Advanced document processing for vague content without manufacturing keywords")
     
     # System overview
     st.header("🎯 System Capabilities")
@@ -120,9 +108,38 @@ def show_home_page():
     # Quick start guide
     st.header("🚀 Quick Start Guide")
     
-    tab1, tab2, tab3, tab4 = st.tabs(["🧪 Testing", "🏭 Industry Testing", "📄 Document Upload", "📊 Analytics"])
+    tab1, tab2, tab3, tab4 = st.tabs(["✅ RAG Pipeline", "🧪 Testing", "🏭 Industry Testing", "📊 Analytics"])
     
     with tab1:
+        st.subheader("✅ RAG Pipeline Checklist")
+        st.markdown("""
+        **See the complete RAG system in action:**
+        
+        1. Navigate to **✅ RAG Pipeline Checklist**
+        2. Initialize the RAG system with embeddings (BAAI/bge-large-en-v1.5)
+        3. Upload any PDF document
+        4. Watch the system:
+           - Extract text from document
+           - Create vector embeddings
+           - Store in ChromaDB vector database
+           - Generate manufacturing rules
+        5. Verify each step with visual indicators
+        
+        **What you'll see:**
+        - ✅ Real-time status for each pipeline step
+        - 📊 Embedding statistics and database metrics
+        - 📜 Extracted manufacturing rules with confidence scores
+        - 🔍 Semantic features and constraint analysis
+        
+        **This is a working implementation, not a demo!**
+        All embeddings are real, all rules are generated using NLP,
+        and everything is stored in a persistent vector database.
+        """)
+        
+        if st.button("✅ Go to RAG Pipeline Checklist", type="primary", key="nav_checklist"):
+            st.switch_page("pages/rag_checklist.py")
+    
+    with tab2:
         st.subheader("🧪 Interactive Testing")
         st.markdown("""
         **Test the system with vague documents:**
@@ -140,10 +157,10 @@ def show_home_page():
         ```
         """)
         
-        if st.button("🧪 Go to Testing Simulator", type="primary"):
+        if st.button("🧪 Go to Testing Simulator", type="primary", key="nav_testing"):
             st.switch_page("pages/testing_simulator.py")
     
-    with tab2:
+    with tab3:
         st.subheader("🏭 Industry Document Testing")
         st.markdown("""
         **Test with real-world industry documents:**
@@ -168,31 +185,8 @@ def show_home_page():
         - Cross-industry performance metrics
         """)
         
-        if st.button("🏭 Go to Industry Testing", type="primary"):
+        if st.button("🏭 Go to Industry Testing", type="primary", key="nav_industry"):
             st.switch_page("pages/industry_testing_simulator.py")
-    
-    with tab3:
-        st.subheader("📄 Document Processing")
-        st.markdown("""
-        **Upload and process real documents:**
-        
-        1. Navigate to **📄 Document Upload**
-        2. Upload PDF, DOCX, or TXT files
-        3. System automatically detects document type
-        4. Extracts rules using multiple methods
-        5. View results in enhanced analytics
-        
-        **Supported document types:**
-        - Manufacturing specifications (traditional)
-        - Software requirements
-        - General business guidelines  
-        - Technical standards
-        - Safety procedures
-        - Any other document type
-        """)
-        
-        if st.button("📄 Go to Document Upload", type="primary"):
-            st.switch_page("pages/enhanced_uploader.py")
     
     with tab4:
         st.subheader("📊 System Analytics")
@@ -212,7 +206,7 @@ def show_home_page():
         - System health monitoring
         """)
         
-        if st.button("📊 Go to Analytics", type="primary"):
+        if st.button("📊 Go to Analytics", type="primary", key="nav_analytics"):
             st.switch_page("pages/analytics.py")
     
     # System architecture
@@ -254,12 +248,12 @@ def show_home_page():
     st.header("📝 Recent Updates")
     
     updates = [
-        "🆕 **Testing Simulator** - Interactive testing environment for vague documents",
-        "🚀 **Universal RAG System** - Handles any document type with adaptive processing",
-        "🎯 **Enhanced Classification** - Ensemble approach with multiple AI methods",
-        "📊 **Advanced Analytics** - Real-time performance monitoring and insights",
-        "🧪 **Challenge Mode** - Test system with increasingly vague content",
-        "💾 **GitHub Integration** - Complete codebase available for collaboration"
+        "✅ **RAG Pipeline Checklist** - Visual verification of complete RAG system implementation",
+        "🚀 **Universal RAG System** - Real embeddings with BAAI/bge-large-en-v1.5",
+        "💾 **ChromaDB Integration** - Persistent vector database with actual storage",
+        "🎯 **Implicit Rule Extraction** - NLP-based rule generation from any document",
+        "📊 **Real-time Verification** - See each pipeline step with status indicators",
+        "🧪 **Challenge Mode** - Test system with increasingly vague content"
     ]
     
     for update in updates:

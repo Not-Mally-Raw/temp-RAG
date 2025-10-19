@@ -292,8 +292,7 @@ class IndustryDocumentTester:
             
             # Initialize RAG systems
             self.rag_system = EnhancedManufacturingRAG(
-                collection_name="industry_test",
-                persist_directory="./test_industry_db"
+                persist_path="./test_industry_db"
             )
             
             self.universal_rag = UniversalManufacturingRAG(
@@ -471,7 +470,7 @@ def main():
     )
     
     st.title("🧪 Industry Document Testing Simulator")
-    st.subtitle("Test RAG System with Real-World Industry Documents")
+    st.subheader("Test RAG System with Real-World Industry Documents")
     
     # Initialize tester
     if 'tester' not in st.session_state:
