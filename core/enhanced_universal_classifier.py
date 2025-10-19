@@ -12,8 +12,8 @@ from typing import List, Dict, Any, Optional, Tuple
 import numpy as np
 from sentence_transformers import SentenceTransformer
 
-from universal_rag_system import UniversalManufacturingRAG
-from implicit_rule_extractor import ImplicitRuleExtractor
+from core.universal_rag_system import UniversalManufacturingRAG
+from core.implicit_rule_extractor import ImplicitRuleExtractor
 
 class EnhancedUniversalClassifier:
     """Advanced classifier that handles any type of document content."""
