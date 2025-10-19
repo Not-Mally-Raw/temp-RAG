@@ -52,7 +52,27 @@ RAG-System/
 
 ## ⚡ Quick Start
 
-### Prerequisites
+### Automated Setup (Recommended)
+
+```bash
+# Clone the repository
+git clone <repository-url>
+cd temp-RAG
+
+# Run the quick start script (checks dependencies and runs tests)
+python quick_start.py
+```
+
+The quick start script will:
+- ✅ Check Python version (3.8+ required)
+- ✅ Verify dependencies are installed
+- ✅ Offer to install missing packages
+- ✅ Run basic functionality tests
+- ✅ Show you next steps
+
+### Manual Installation
+
+If you prefer manual setup:
 
 ```bash
 # Python 3.8 or higher
@@ -65,31 +85,26 @@ pip install -r requirements.txt
 pip install -e .
 ```
 
-### Installation
+### Running Your First DFM Extraction
 
-1. **Clone the repository**:
-```bash
-git clone <repository-url>
-cd temp-RAG
-```
-
-2. **Install dependencies**:
-```bash
-pip install -r requirements.txt
-```
-
-3. **Run a simple test**:
+1. **Test with sample data**:
 ```bash
 python tests/test_dfm_pipeline.py
 ```
 
-4. **Process a DFM handbook** (requires dependencies installed):
+2. **Process the sample DFM handbook**:
 ```bash
-# Using the sample DFM file
 python -m core.dfm_pipeline data/sample_dfm.txt --output results.json
+```
 
-# Or with a real PDF
+3. **Process your own PDF**:
+```bash
 python -m core.dfm_pipeline path/to/handbook.pdf
+```
+
+4. **Launch the web UI**:
+```bash
+streamlit run main_app.py
 ```
 
 ### Running the Analytics Dashboard

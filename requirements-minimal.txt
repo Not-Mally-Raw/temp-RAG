@@ -1,0 +1,21 @@
+# Minimal requirements for basic testing and development
+# These are the core dependencies needed to run the DFM pipeline
+
+# Text processing
+pdfplumber>=0.9.0
+
+# Lightweight sentence embeddings (384 dimensions, ~100MB)
+sentence-transformers>=2.2.2
+
+# Vector database
+chromadb>=0.4.15
+
+# Small language model support
+transformers>=4.35.0
+torch>=2.0.0
+
+# Basic utilities
+numpy>=1.24.0
+
+# Note: This installs smaller models by default
+# For better quality, see requirements.txt for full dependencies
