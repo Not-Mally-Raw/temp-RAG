@@ -7,7 +7,17 @@
 
 ## 🚀 Overview
 
-The Enhanced RAG (Retrieval-Augmented Generation) System is a state-of-the-art solution designed to handle **random documents without manufacturing keywords** and extract implicit manufacturing rules. This system addresses the critical challenge of processing unstructured documents that may not contain explicit manufacturing terminology while still containing valuable manufacturing rules and constraints.
+The Enhanced RAG (Retrieval-Augmented Generation) System is a state-of-the-art solution designed to handle **DFM (Design for Manufacturing) handbooks** and extract manufacturing rules. This system processes structured and unstructured documents to extract manufacturing constraints, tolerances, material specifications, and design requirements.
+
+> **Recent Updates**: The repository has been consolidated and restructured for better maintainability. See the [DFM Pipeline Guide](docs/DFM_PIPELINE_GUIDE.md) for the new streamlined architecture.
+
+### 🎯 What's New
+
+- **Consolidated Architecture**: All duplicate code removed, single source of truth
+- **DFM Pipeline**: New end-to-end pipeline specifically for DFM handbook processing (`core/dfm_pipeline.py`)
+- **Proper Package Structure**: Python packages with `__init__.py` files for clean imports
+- **Comprehensive Documentation**: Full guides for usage and troubleshooting
+- **Sample Data**: Included sample DFM content for testing (`data/sample_dfm.txt`)
 
 ### 🎯 Key Capabilities
 
@@ -337,28 +347,29 @@ The Streamlit-based analytics dashboard provides:
 - **Audit Trail**: Comprehensive logging of all document processing and query activities
 - **Access Control**: Role-based access control for different user types
 
-## 🚦 Troubleshooting
+## 📚 Documentation
 
-### Common Issues
+- **[DFM Pipeline Guide](docs/DFM_PIPELINE_GUIDE.md)**: Complete guide for using the DFM pipeline
+- **[Troubleshooting Guide](docs/TROUBLESHOOTING.md)**: Solutions to common issues
+- **[API Documentation](docs/)**: Detailed API reference (coming soon)
 
-1. **Memory Issues with Large Documents**:
-```python
-# Adjust chunk size for large documents
-rag = EnhancedManufacturingRAG(chunk_size=300, chunk_overlap=30)
-```
+## 🚦 Known Limitations
 
-2. **Slow Query Performance**:
-```python
-# Optimize embedding model loading
-import os
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-```
+1. **Model Dependencies**: The system requires ~2GB RAM for small models, up to 8GB for large models
+2. **PDF Processing**: Currently handles text-based PDFs; scanned documents require OCR setup
+3. **LLM Quality**: Rule extraction quality depends on the LLM model used (small models have limitations)
+4. **Import Paths**: Must be run from repository root or installed with `pip install -e .`
 
-3. **Rule Extraction Accuracy**:
-```python
-# Adjust confidence threshold
-extractor = ImplicitRuleExtractor(confidence_threshold=0.7)
-```
+## 🔧 Troubleshooting
+
+For detailed troubleshooting, see the [Troubleshooting Guide](docs/TROUBLESHOOTING.md).
+
+### Quick Fixes
+
+1. **Import Errors**: Run from repository root or `pip install -e .`
+2. **Memory Issues**: Use smaller models (`all-MiniLM-L6-v2` instead of `bge-large`)
+3. **Slow Performance**: Reduce chunk count or use GPU acceleration
+4. **Missing Dependencies**: Run `pip install -r requirements.txt`
 
 ## 🤝 Contributing
 
