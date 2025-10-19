@@ -1,0 +1,17 @@
+"""
+Content generation utilities.
+"""
+
+from .features import (
+    MANUFACTURING_FEATURES,
+    CRITICAL_DIMENSIONS,
+    TOLERANCE_CLASSES,
+    SURFACE_FINISH_STANDARDS,
+)
+
+__all__ = [
+    'MANUFACTURING_FEATURES',
+    'CRITICAL_DIMENSIONS',
+    'TOLERANCE_CLASSES',
+    'SURFACE_FINISH_STANDARDS',
+]

@@ -60,13 +60,17 @@ def main():
         app = analytics.RAGAnalyticsApp()
         app.run()
     elif page_key == "enhanced_uploader":
-        exec(open("pages/enhanced_uploader.py").read())
+        import pages.enhanced_uploader
+        # Module is executed on import
     elif page_key == "enhanced_classification":
-        exec(open("pages/enhanced_classification.py").read())
+        import pages.enhanced_classification
+        # Module is executed on import
     elif page_key == "enhanced_rule_generation":
-        exec(open("pages/enhanced_rule_generation.py").read())
+        import pages.enhanced_rule_generation
+        # Module is executed on import
     elif page_key == "enhanced_rag_results":
-        exec(open("pages/enhanced_rag_results.py").read())
+        import pages.enhanced_rag_results
+        # Module is executed on import
 
 def show_home_page():
     """Show the home page with system overview."""

@@ -1,0 +1,36 @@
+Sample DFM Handbook - Design for Manufacturing Guidelines
+
+Section 1: Dimensional Tolerances
+All critical dimensions must maintain tolerances of ±0.001" unless otherwise specified.
+For non-critical features, standard tolerances of ±0.005" are acceptable.
+Hole diameters must be specified with tolerance class IT7 or better for precision fits.
+
+Section 2: Surface Finish Requirements
+Machined surfaces require a surface finish of Ra 1.6 μm (63 μin) or better.
+Ground surfaces must achieve Ra 0.8 μm (32 μin).
+Polished surfaces require Ra 0.4 μm (16 μin) for optical applications.
+
+Section 3: Material Specifications
+All aluminum parts must use 6061-T6 alloy or equivalent with minimum yield strength of 240 MPa.
+Steel components shall be AISI 4140 with Rockwell hardness HRC 28-32.
+Plastic parts must withstand operating temperatures from -40°C to 85°C.
+
+Section 4: Manufacturing Constraints
+Minimum wall thickness for injection molded parts: 1.5 mm for ABS, 2.0 mm for PC.
+Draft angles must be minimum 1° per side for easy part ejection.
+Inside corner radii should be at least 0.5 times the wall thickness.
+
+Section 5: Assembly Requirements
+Threaded fasteners must use locking mechanisms (thread locker or lock washers).
+Press fits require interference of 0.001-0.003" for aluminum assemblies.
+Welded joints must be inspected for penetration depth and minimum weld bead width.
+
+Section 6: Quality Control
+First article inspection required for all new production runs.
+100% dimensional inspection on critical features defined in the control plan.
+Statistical process control charts must be maintained for key characteristics.
+
+Section 7: Safety and Compliance
+All sharp edges must be deburred to maximum 0.5 mm radius.
+Components in contact with food must be FDA approved materials.
+Electrical insulation must withstand 1000V dielectric test.

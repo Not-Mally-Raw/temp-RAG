@@ -7,7 +7,7 @@ import os
 import pandas as pd
 from transformers import AutoModelForSequenceClassification, AutoTokenizer
 import torch
-from rag_pipeline_integration import init_rag_pipeline, display_rag_stats, add_rag_search_interface
+from core.rag_pipeline_integration import init_rag_pipeline, display_rag_stats, add_rag_search_interface
 
 def load_model(model_path, tokenizer_name):
     model = AutoModelForSequenceClassification.from_pretrained(model_path)

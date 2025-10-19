@@ -15,7 +15,7 @@ import streamlit as st
 from streamlit.runtime.uploaded_file_manager import UploadedFile
 import json
 
-from rag_pipeline_integration import init_rag_pipeline, display_rag_stats, add_rag_search_interface
+from core.rag_pipeline_integration import init_rag_pipeline, display_rag_stats, add_rag_search_interface
 
 def _create_enhanced_prompt_with_rag(rule_type: str|None, rule_text: str, rag_context: dict) -> str:
     """Create an enhanced prompt with RAG context for better rule parsing."""

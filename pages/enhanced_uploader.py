@@ -4,7 +4,7 @@ Enhanced uploader page with RAG integration
 
 import streamlit as st
 import os
-from rag_pipeline_integration import init_rag_pipeline, display_rag_stats
+from core.rag_pipeline_integration import init_rag_pipeline, display_rag_stats
 
 # Initialize RAG pipeline
 rag_pipeline = init_rag_pipeline()

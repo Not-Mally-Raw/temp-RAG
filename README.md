@@ -50,6 +50,9 @@ python --version
 
 # Install required packages
 pip install -r requirements.txt
+
+# Or install in development mode
+pip install -e .
 ```
 
 ### Installation
@@ -57,7 +60,7 @@ pip install -r requirements.txt
 1. **Clone the repository**:
 ```bash
 git clone <repository-url>
-cd RAG-System
+cd temp-RAG
 ```
 
 2. **Install dependencies**:
@@ -65,24 +68,18 @@ cd RAG-System
 pip install -r requirements.txt
 ```
 
-3. **Download required models**:
+3. **Run a simple test**:
 ```bash
-python -c "
-import sentence_transformers
-from transformers import pipeline
-model = sentence_transformers.SentenceTransformer('BAAI/bge-large-en-v1.5')
-classifier = pipeline('zero-shot-classification', model='facebook/bart-large-mnli')
-print('Models downloaded successfully!')
-"
+python tests/test_dfm_pipeline.py
 ```
 
-4. **Initialize the system**:
+4. **Process a DFM handbook** (requires dependencies installed):
 ```bash
-python -c "
-from core.enhanced_rag_db import EnhancedManufacturingRAG
-rag = EnhancedManufacturingRAG()
-print('RAG system initialized successfully!')
-"
+# Using the sample DFM file
+python -m core.dfm_pipeline data/sample_dfm.txt --output results.json
+
+# Or with a real PDF
+python -m core.dfm_pipeline path/to/handbook.pdf
 ```
 
 ### Running the Analytics Dashboard
