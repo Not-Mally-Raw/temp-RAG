@@ -1,0 +1,46 @@
+# Core Dependencies
+sentence-transformers>=2.2.2
+transformers>=4.35.0
+torch>=2.0.0
+chromadb>=0.4.15
+langchain>=0.0.350
+streamlit>=1.28.0
+
+# NLP and Text Processing
+spacy>=3.7.0
+nltk>=3.8.1
+textstat>=0.7.3
+python-docx>=0.8.11
+PyPDF2>=3.0.1
+pdfplumber>=0.9.0
+
+# Data Science and Analytics
+pandas>=2.0.0
+numpy>=1.24.0
+plotly>=5.17.0
+scikit-learn>=1.3.0
+
+# Web and API
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+fastapi>=0.104.0
+uvicorn>=0.24.0
+
+# Testing and Development
+pytest>=7.4.0
+pytest-cov>=4.1.0
+black>=23.9.0
+flake8>=6.1.0
+
+# System and File Handling
+python-magic>=0.4.27
+pillow>=10.0.0
+openpyxl>=3.1.0
+
+# Optional: For advanced image processing
+# tesseract>=5.3.0
+# opencv-python>=4.8.0
+
+# Optional: For additional embedding models
+# openai>=1.0.0
+# cohere>=4.30.0
