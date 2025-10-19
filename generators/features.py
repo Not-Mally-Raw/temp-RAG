@@ -346,7 +346,7 @@ features_dict = {
     "Injection Moulding": injection_moulding,
     "Mill": mill,
     "Model": model,
-    "Sheet Metal": sheetmetal,
+    "Sheetmetal": sheetmetal,
     "SMForm": smform,
     "Tubing": tubing,
     "Turn": turn
