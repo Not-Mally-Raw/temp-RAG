@@ -396,7 +396,7 @@ def enhanced_classification_interface():
     """Streamlit interface for enhanced classification."""
     
     st.title("🎯 Universal Document Classifier")
-    st.subtitle("Handles any type of document - with or without manufacturing keywords")
+    st.subheader("Handles any type of document - with or without manufacturing keywords")
     
     # Initialize systems
     classifier = EnhancedUniversalClassifier()

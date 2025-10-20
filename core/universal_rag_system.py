@@ -73,7 +73,7 @@ class UniversalManufacturingRAG(EnhancedManufacturingRAG):
         doc_id = hashlib.md5(pdf_bytes).hexdigest()[:16]
         
         if doc_id in self.doc_registry:
-            return {"message": "Document already processed", "doc_id": doc_id}
+            return {"message": "Document already processed", "doc_id": doc_id, "text_chunks": 0, "processing_method": "already_processed"}
         
         results = {
             "text_chunks": 0, 
@@ -89,7 +89,7 @@ class UniversalManufacturingRAG(EnhancedManufacturingRAG):
             sentences = extract_sentences(pdf_bytes)
             
             if not sentences:
-                return {"error": "No text content extracted"}
+                return {"error": "No text content extracted", "text_chunks": 0, "processing_method": "failed"}
             
             text_content = ' '.join(sentences)
             

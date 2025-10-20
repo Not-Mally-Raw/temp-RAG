@@ -76,7 +76,7 @@ def show_home_page():
     """Show the home page with system overview."""
     
     st.title("🚀 Universal RAG System for Manufacturing Intelligence")
-    st.subtitle("Advanced document processing for vague content without manufacturing keywords")
+    st.subheader("Advanced document processing for vague content without manufacturing keywords")
     
     # System overview
     st.header("🎯 System Capabilities")

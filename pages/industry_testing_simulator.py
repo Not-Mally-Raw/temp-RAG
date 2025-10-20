@@ -462,16 +462,20 @@ class IndustryDocumentTester:
 
 def main():
     """Main Streamlit application for industry document testing."""
-    
-    st.set_page_config(
-        page_title="Industry Document Testing Simulator",
-        page_icon="🧪",
-        layout="wide",
-        initial_sidebar_state="expanded"
-    )
+    # Only set page config when running this module directly. main_app.py controls it for multipage app.
+    try:
+        if __name__ == "__main__":
+            st.set_page_config(
+                page_title="Industry Document Testing Simulator",
+                page_icon="🧪",
+                layout="wide",
+                initial_sidebar_state="expanded"
+            )
+    except Exception:
+        pass
     
     st.title("🧪 Industry Document Testing Simulator")
-    st.subtitle("Test RAG System with Real-World Industry Documents")
+    st.subheader("Test RAG System with Real-World Industry Documents")
     
     # Initialize tester
     if 'tester' not in st.session_state:

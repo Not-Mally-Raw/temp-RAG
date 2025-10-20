@@ -1,14 +1,14 @@
 # Core Dependencies
-sentence-transformers>=2.2.2
-transformers>=4.35.0
+sentence-transformers==2.2.2
+transformers==4.35.0
 torch>=2.0.0
-chromadb>=0.4.15
+chromadb==0.4.18
 langchain>=0.0.350
-streamlit>=1.28.0
+streamlit==1.28.0
 
 # NLP and Text Processing
-spacy>=3.7.0
-nltk>=3.8.1
+spacy==3.7.2
+nltk==3.8.1
 textstat>=0.7.3
 python-docx>=0.8.11
 PyPDF2>=3.0.1

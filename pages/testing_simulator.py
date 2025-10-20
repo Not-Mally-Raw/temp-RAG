@@ -47,15 +47,23 @@ class UniversalRAGTestSimulator:
     
     def run_simulation(self):
         """Main simulation interface."""
-        st.set_page_config(
-            page_title="Universal RAG Testing Simulator",
-            page_icon="🧪",
-            layout="wide",
-            initial_sidebar_state="expanded"
-        )
+        # Avoid calling set_page_config when imported into the multipage app.
+        # Only set page config when running this file standalone.
+        try:
+            if __name__ == "__main__":
+                st.set_page_config(
+                    page_title="Universal RAG Testing Simulator",
+                    page_icon="🧪",
+                    layout="wide",
+                    initial_sidebar_state="expanded"
+                )
+        except Exception:
+            # Streamlit will raise an error if set_page_config is called after
+            # other Streamlit commands; ignore since main_app.py controls config.
+            pass
         
         st.title("🧪 Universal RAG Testing Simulator")
-        st.subtitle("Test document processing capabilities with vague content and no manufacturing keywords")
+        st.subheader("Test document processing capabilities with vague content and no manufacturing keywords")
         
         # Sidebar configuration
         self.setup_sidebar()

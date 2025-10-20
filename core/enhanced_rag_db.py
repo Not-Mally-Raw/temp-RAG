@@ -225,8 +225,10 @@ class EnhancedManufacturingRAG:
         embedding_model_name: str = "BAAI/bge-large-en-v1.5",
         persist_path: str = "enhanced_chroma_db",
         chunk_size: int = 800,
-        chunk_overlap: int = 100
+        chunk_overlap: int = 100,
+        collection_name: str = "manufacturing_docs"
     ):
+        self.collection_name = collection_name
         self.embeddings = SentenceTransformerEmbeddings(embedding_model_name)
         self.persist_path = persist_path
         self.text_splitter = ManufacturingTextSplitter(chunk_size, chunk_overlap)
@@ -234,7 +236,8 @@ class EnhancedManufacturingRAG:
         # Initialize vector store
         self.vectorstore = Chroma(
             embedding_function=self.embeddings,
-            persist_directory=persist_path
+            persist_directory=persist_path,
+            collection_name=collection_name
         )
         
         # Enhanced memory for conversation (disabled for now)
@@ -264,6 +267,14 @@ class EnhancedManufacturingRAG:
     
     def process_pdf_document(self, pdf_bytes: bytes, filename: str) -> Dict[str, int]:
         """Process a complete PDF document with all content types."""
+        # Input validation
+        if not isinstance(pdf_bytes, bytes):
+            raise ValueError("pdf_bytes must be bytes")
+        if not pdf_bytes:
+            raise ValueError("pdf_bytes cannot be empty")
+        if not isinstance(filename, str) or not filename:
+            raise ValueError("filename must be a non-empty string")
+        
         doc_id = hashlib.md5(pdf_bytes).hexdigest()[:16]
         
         if doc_id in self.doc_registry:
@@ -345,12 +356,16 @@ class EnhancedManufacturingRAG:
             metadata_filter["rule_category"] = rule_category
         
         # Perform similarity search
-        if metadata_filter:
-            results = self.vectorstore.similarity_search_with_score(
-                query, k=top_k, filter=metadata_filter
-            )
-        else:
-            results = self.vectorstore.similarity_search_with_score(query, k=top_k)
+        try:
+            if metadata_filter:
+                results = self.vectorstore.similarity_search_with_score(
+                    query, k=top_k, filter=metadata_filter
+                )
+            else:
+                results = self.vectorstore.similarity_search_with_score(query, k=top_k)
+        except Exception as e:
+            print(f"Error during similarity search: {e}")
+            return []  # Return empty list on error
         
         # Enhanced results with manufacturing context
         enhanced_results = []
