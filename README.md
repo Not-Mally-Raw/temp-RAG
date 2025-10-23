@@ -8,9 +8,9 @@
 ## 🚀 Overview
 
 WHO CARES? ITS WORKING AND DEF BETTER THAN OLDER COMMITS 
-\n PS: ODELS USED ARE API CALLED GEMINI 1.5 (via ai studio) and Llama 3.3 70b (sadha, no instruct vagere) via GroqCloud
-\n Jadoo tera task is to tweak/ improvise if you need to
-\n and suggestions de.
+- PS: ODELS USED ARE API CALLED GEMINI 1.5 (via ai studio) and Llama 3.3 70b (sadha, no instruct vagere) via GroqCloud
+- Jadoo tera task is to tweak/ improvise if you need to
+-  and suggestions de.
 
 The Enhanced RAG (Retrieval-Augmented Generation) System is a state-of-the-art solution designed to handle **random documents without manufacturing keywords** and extract implicit manufacturing rules. This system addresses the critical challenge of processing unstructured documents that may not contain explicit manufacturing terminology while still containing valuable manufacturing rules and constraints.
 
