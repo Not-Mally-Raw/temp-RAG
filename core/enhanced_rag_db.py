@@ -19,7 +19,7 @@ from langchain_chroma import Chroma
 from langchain_core.embeddings import Embeddings
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-from langchain.memory import ConversationBufferWindowMemory
+# Memory not needed for this implementation
 from langchain_core.retrievers import BaseRetriever
 
 # Import our existing extractors
@@ -237,12 +237,8 @@ class EnhancedManufacturingRAG:
             persist_directory=persist_path
         )
         
-        # Enhanced memory for conversation
-        self.memory = ConversationBufferWindowMemory(
-            k=10,  # Keep last 10 exchanges
-            return_messages=True,
-            memory_key="chat_history"
-        )
+        # Memory removed - not needed for RAG functionality
+        self.memory = None
         
         # Document registry
         self.doc_registry: Dict[str, Dict[str, Any]] = {}

@@ -1,34 +1,54 @@
 """
-rag_pipeline_integration.py
-Integration module that connects the enhanced RAG system with the existing text processing pipeline.
+RAG Pipeline Integration
+Connects the enhanced RAG system with the existing text processing pipeline
 """
 
 import streamlit as st
+from typing import Dict, List, Any, Optional, Tuple
+import pandas as pd
+import json
 import os
 import tempfile
-from typing import Dict, List, Any, Optional
-import pandas as pd
-from pathlib import Path
+from datetime import datetime
+import logging
 
-from core.enhanced_rag_db import (
-    EnhancedManufacturingRAG, 
-    integrate_with_text_pipeline,
-    enhance_rule_generation_with_rag
-)
+logger = logging.getLogger(__name__)
+
+# Import the RAG system
+from .rag_database import ManufacturingRAG, DocumentMetadata
+from .implicit_rule_extractor import ImplicitRuleExtractor
+from .rule_extractor import RuleExtractor, ExtractionConfig
+
+# Import extractors
 from extractors.text import extract_sentences
 from extractors.table import dual_pipeline_2
 from extractors.image import extract_images
 
 class RAGIntegratedPipeline:
-    """Integrated pipeline that combines existing extraction with enhanced RAG capabilities."""
+    """Integrated pipeline that combines existing extraction with RAG capabilities."""
     
-    def __init__(self, rag_db_path: str = "manufacturing_rag_db"):
-        self.rag_system = EnhancedManufacturingRAG(
-            embedding_model_name="BAAI/bge-large-en-v1.5",  # Better technical embeddings
-            persist_path=rag_db_path,
-            chunk_size=800,
-            chunk_overlap=100
+    def __init__(self, collection_name: str = "manufacturing_rag", persist_directory: str = "./rag_db"):
+        """Initialize the RAG pipeline integration."""
+        self.rag_system = ManufacturingRAG(
+            persist_path=persist_directory
         )
+        self.implicit_extractor = ImplicitRuleExtractor()
+        
+        # Initialize rule extractor
+        try:
+            extraction_config = ExtractionConfig(
+                max_rule_length=200,
+                max_rules_per_chunk=10,
+                min_confidence_threshold=0.3,
+                enable_rule_refinement=True,
+                enable_context_analysis=True
+            )
+            self.rule_extractor = RuleExtractor(config=extraction_config)
+            logger.info("Rule extractor initialized successfully")
+        except Exception as e:
+            logger.warning(f"Failed to initialize extractor: {e}")
+            self.rule_extractor = None
+        
         self.temp_dir = None
         
     def process_uploaded_file(self, uploaded_file) -> Dict[str, Any]:
@@ -191,7 +211,64 @@ class RAGIntegratedPipeline:
     ) -> str:
         """Generate enhanced prompts for rule generation using RAG context."""
         
-        return enhance_rule_generation_with_rag(rule_text, rule_type, self.rag_system)
+        try:
+            # Query RAG system for context
+            rag_results = self.rag_system.retrieve_for_rule_generation(
+                query=f"Rules similar to: {rule_text}",
+                top_k=5
+            )
+            
+            # Prepare context for enhanced extraction  
+            if isinstance(rag_results, list):
+                # Handle list response from retrieve_for_rule_generation
+                rag_context = {
+                    'retrieved_context': [{'text': result.get('text', ''), 'metadata': result.get('metadata', {})} 
+                                        for result in rag_results],
+                    'manufacturing_features': [],
+                    'related_constraints': [],
+                    'manufacturing_standards': []
+                }
+            else:
+                # Handle dict response (fallback)
+                rag_context = {
+                    'retrieved_context': [{'text': result.page_content, 'metadata': result.metadata} 
+                                        for result in rag_results.get('documents', [])],
+                    'manufacturing_features': rag_results.get('manufacturing_features', []),
+                    'related_constraints': rag_results.get('related_constraints', []),
+                    'manufacturing_standards': rag_results.get('manufacturing_standards', [])
+                }
+            
+            # Use enhanced rule extractor if available
+            if hasattr(self, 'rule_extractor'):
+                extraction_result = self.rule_extractor.extract_rules_enhanced(
+                    rule_text, rag_context
+                )
+                
+                if extraction_result.rules:
+                    # Convert to expected format
+                    enhanced_rule = extraction_result.rules[0]  # Take the best one
+                    return json.dumps({
+                        "success": True,
+                        "enhanced_rule": enhanced_rule.dict(),
+                        "rag_context": rag_context,
+                        "processing_metadata": extraction_result.processing_metadata
+                    }, indent=2)
+            
+            # Fallback to basic enhancement
+            return json.dumps({
+                "success": True,
+                "enhanced_rule": {
+                    "rule_category": rule_type,
+                    "name": rule_text[:100],
+                    "confidence": 0.6,
+                    "rag_context_available": bool(rag_context.get('retrieved_context'))
+                },
+                "rag_context": rag_context
+            }, indent=2)
+            
+        except Exception as e:
+            logger.error(f"Rule enhancement error: {e}")
+            return json.dumps({"success": False, "error": str(e), "rule_text": rule_text})
     
     def get_knowledge_base_summary(self) -> Dict[str, Any]:
         """Get summary of the knowledge base for display."""
