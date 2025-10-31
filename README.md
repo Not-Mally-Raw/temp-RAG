@@ -363,13 +363,6 @@ os.environ["TOKENIZERS_PARALLELISM"] = "false"
 extractor = ImplicitRuleExtractor(confidence_threshold=0.7)
 ```
 
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create a feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
 
 ## 📝 License
 
@@ -377,20 +370,7 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 
 ## 🙏 Acknowledgments
 
-- **HCL Tech** for project sponsorship and requirements
 - **BAAI** for the excellent BGE embedding model
 - **ChromaDB** team for the vector database solution
 - **Hugging Face** for transformer models and tools
 - **Streamlit** for the interactive dashboard framework
-
-## 📞 Support
-
-For questions, issues, or feature requests:
-
-- **Email**: [support@hcltech.com](mailto:support@hcltech.com)
-- **Issues**: [GitHub Issues](https://github.com/your-org/RAG-System/issues)
-- **Documentation**: [Project Wiki](https://github.com/your-org/RAG-System/wiki)
-
----
-
-**Made with ❤️ for HCL Tech Manufacturing Intelligence Initiative**
