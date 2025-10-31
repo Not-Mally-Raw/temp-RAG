@@ -5,11 +5,11 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Streamlit App](https://static.streamlit.io/badges/streamlit_badge_black_white.svg)](https://streamlit.io/)
 
-## 🚀 Overview
+## Overview
 
 The Enhanced RAG (Retrieval-Augmented Generation) System is a state-of-the-art solution designed to handle **random documents without manufacturing keywords** and extract implicit manufacturing rules. This system addresses the critical challenge of processing unstructured documents that may not contain explicit manufacturing terminology while still containing valuable manufacturing rules and constraints.
 
-### 🎯 Key Capabilities
+###  Key Capabilities
 
 - **Keyword-Agnostic Processing**: Extracts manufacturing rules from documents regardless of explicit keyword presence
 - **Implicit Rule Detection**: Advanced NLP techniques to identify hidden manufacturing constraints and requirements
@@ -268,7 +268,7 @@ custom_rule_types = [
 extractor = ImplicitRuleExtractor(custom_rule_types=custom_rule_types)
 ```
 
-## 🧪 Testing and Validation
+##  Testing and Validation
 
 ### Industry Document Testing
 
@@ -289,22 +289,22 @@ The system includes comprehensive testing with **10 real-world industry document
 
 ### Testing Modes
 
-1. **🧪 Universal Testing Simulator**
+1. ** Universal Testing Simulator**
    - Interactive testing with custom content
    - Challenge mode for extremely vague documents
    - Real-time rule extraction and analysis
    
-2. **🏭 Industry Document Testing**
+2. ** Industry Document Testing**
    - Pre-loaded industry documents
    - Cross-industry performance comparison
    - Method effectiveness analysis
    
-3. **📊 Performance Analytics**
+3. ** Performance Analytics**
    - Processing time benchmarking
    - Accuracy measurement across document types
    - Method distribution analysis
 
-## 📈 Analytics Dashboard
+##  Analytics Dashboard
 
 The Streamlit-based analytics dashboard provides:
 
@@ -333,14 +333,14 @@ The Streamlit-based analytics dashboard provides:
    - Document processing metrics
    - Error tracking and logging
 
-## 🔒 Security and Compliance
+##  Security and Compliance
 
 - **Data Privacy**: All processing is performed locally with no external API calls for sensitive data
 - **Secure Storage**: ChromaDB with encryption support for sensitive manufacturing data
 - **Audit Trail**: Comprehensive logging of all document processing and query activities
 - **Access Control**: Role-based access control for different user types
 
-## 🚦 Troubleshooting
+##  Troubleshooting
 
 ### Common Issues
 
@@ -364,11 +364,11 @@ extractor = ImplicitRuleExtractor(confidence_threshold=0.7)
 ```
 
 
-## 📝 License
+## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
 
-## 🙏 Acknowledgments
+##  Acknowledgments
 
 - **BAAI** for the excellent BGE embedding model
 - **ChromaDB** team for the vector database solution
