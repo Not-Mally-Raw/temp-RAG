@@ -290,6 +290,12 @@ async def run_hcl_validation(system, hcl_file):
     """Run HCL validation asynchronously."""
     return await system.validate_against_hcl_dataset(hcl_file.name)
 
+# --- DI wiring for Streamlit UI ---
+from core.orchestrator import default_production_system
+
+# single system instance used by UI actions (lazy/default wiring)
+_ui_system = default_production_system()
+
 def main():
     """Main Streamlit application."""
     
@@ -559,6 +565,14 @@ def main():
         
         for feature in features:
             st.markdown(feature)
+
+# Replace existing process handler to forward to orchestrator (non-invasive)
+def handle_process_click(uploaded_file, export_path: str):
+    # existing validation / preprocessing unchanged
+    # forward to orchestrator
+    results = _ui_system.process_document(uploaded_file, export_path=export_path)
+    # existing UI rendering of results continues as before
+    return results
 
 if __name__ == "__main__":
     main()

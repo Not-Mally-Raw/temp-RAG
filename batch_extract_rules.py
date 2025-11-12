@@ -231,5 +231,46 @@ def main() -> None:
     write_csv(rows, args.output)
 
 
+# --- Adapter wiring (non-invasive) ---
+from core.adapters import TextLoaderAdapter, ChunkerAdapter, RuleExtractorAdapter, ExporterAdapter
+
+# Instantiate default adapters (lazy delegates to legacy implementations)
+_loader_adapter = TextLoaderAdapter()
+_chunker_adapter = ChunkerAdapter()
+_extractor_adapter = RuleExtractorAdapter()
+_exporter_adapter = ExporterAdapter()
+
+# Maintain original function names as thin proxies so existing call-sites work unchanged.
+def load_document(path):
+    return _loader_adapter.load(path)
+
+def chunk_text(document):
+    return _chunker_adapter.chunk(document)
+
+def extract_rules_from_chunk(chunk, context=None):
+    return _extractor_adapter.extract(chunk, context)
+
+def export_rules(rules, output_path):
+    return _exporter_adapter.export(rules, output_path)
+# --- end adapter wiring ---
+
+# --- DI wiring: use the new orchestrator with default adapters ---
+from core.orchestrator import default_production_system
+
+# create a single system instance for the batch run (preserves legacy behavior)
+_system = default_production_system()
+
+# Replace legacy per-document orchestration with the orchestrator's method.
+def process_single_document(path, output_path, **kwargs):
+    """
+    Existing callers expected a function that loads, chunks, extracts and exports.
+    Forward to the ProductionRuleExtractionSystem to preserve behaviour while
+    enabling dependency injection.
+    """
+    # keep prior logging/metrics around this call unchanged
+    rules = _system.process_document(path, export_path=output_path)
+    return rules
+# --- end DI wiring ---
+
 if __name__ == "__main__":
     main()

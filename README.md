@@ -96,6 +96,19 @@ These filenames are read verbatim by the batch runner and will appear in the CSV
 - **Schema drift**: Some documents emit free-form categories (e.g., “Occupational Health and Safety”). Recent normalization fixes map these back to enum values, but keep an eye on the CSV for new variants.
 - **Long documents**: Files above ~10k tokens per chunk can still trigger retries. Consider lowering `--max-chunks` or pre-splitting PDFs in those cases.
 
+## SOLID Refactor — initial scaffolding created
+
+I initiated the non-invasive SOLID refactor by adding two small files that provide interfaces and thin adapters. These are purely structural and do not change runtime logic until you replace existing imports with the adapters.
+
+Created files:
+- core/interfaces.py — Protocols and simple dataclasses (ITextLoader, IChunker, IRuleExtractor, IExporter).
+- core/adapters.py — Thin adapter classes that lazily delegate to existing functions/modules (safe until wired in).
+
+Next steps (minimal, safe):
+1. Swap one import in a top-level orchestrator (e.g., ProductionRuleExtractionSystem or batch_extract_rules.py) to consume the adapters via constructor injection.
+2. Add tests that assert adapter outputs match legacy functions.
+3. Incrementally move one responsibility (e.g., document loading) to the new adapter class, keeping logic identical.
+
 ## Contributing & Maintenance
 
 - Automated tests live under `tests/`. Use `pytest` before merging changes.

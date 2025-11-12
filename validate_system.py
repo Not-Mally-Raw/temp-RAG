@@ -13,6 +13,9 @@ from dotenv import load_dotenv
 # Add current directory to path
 sys.path.append(str(Path(__file__).parent))
 
+# Add DI orchestrator import and create default system for validation runs
+from core.orchestrator import default_production_system
+
 def check_environment():
     """Check environment configuration."""
     print("🔍 Checking Environment Configuration...")
@@ -160,6 +163,28 @@ def test_llm_connection():
         print(f"❌ LLM connection test failed: {e}")
         return False
 
+def run_smoke_test(sample_doc_path: str):
+    """Run a smoke test on the rule extraction system with a sample document."""
+    print(f"\n📂 Running Smoke Test on: {sample_doc_path}")
+    print("=" * 50)
+
+    # Replace legacy system instantiation (non-invasive)
+    _system = default_production_system()
+
+    # Simple extraction test
+    try:
+        # payload = system.process_document_advanced(sample_doc_path, ...)
+        payload = _system.process_document(sample_doc_path, export_path=None)
+        if not payload:
+            print("❌ No payload returned from process_document")
+            return False
+
+        print("✅ Smoke test completed successfully")
+        return True
+    except Exception as e:
+        print(f"❌ Smoke test failed: {e}")
+        return False
+
 def main():
     """Main validation function."""
     print("🧪 Enhanced Manufacturing Rule Extraction - System Validation")
@@ -187,6 +212,17 @@ def main():
         except Exception as e:
             print(f"❌ ERROR: {e}")
             results.append(False)
+
+    # Run smoke test on a sample document (if available)
+    sample_doc = Path("samples/sample_document.txt")
+    if sample_doc.exists():
+        smoke_test_result = run_smoke_test(str(sample_doc))
+        results.append(smoke_test_result)
+        status = "✅ PASSED" if smoke_test_result else "❌ FAILED"
+        print(f"\n🔍 Running: Smoke Test on Sample Document")
+        print(f"Result: {status}")
+    else:
+        print("\n⚠️ Skipping smoke test - sample document not found")
 
     print("\n" + "=" * 70)
     print("📊 VALIDATION SUMMARY")

@@ -310,6 +310,55 @@ class TestHCLValidation:
             # Don't assert accuracy here as it's a baseline test
             assert total_predictions > 0
 
+# --- Simple in-memory fakes to test substitutability --- #
+class FakeLoader(ITextLoader):
+    def load(self, path: str) -> DocumentMeta:
+        return DocumentMeta(path=path, pages=1, text="one chunk", extras={"source": "fake"})
+
+class FakeChunker(IChunker):
+    def chunk(self, document: DocumentMeta) -> Iterable[str]:
+        # split text into two "chunks" for determinism
+        return ["chunk A", "chunk B"]
+
+class FakeExtractor(IRuleExtractor):
+    def extract(self, chunk: str, context: Dict[str, Any] = None) -> List[Rule]:
+        # produce a Rule per chunk with text echo and a confidence value
+        return [Rule(id=f"{chunk}-1", text=f"rule from {chunk}", category="TEST", confidence=1.0, meta={"chunk": chunk})]
+
+class CapturingExporter(IExporter):
+    def __init__(self):
+        self.captured = None
+    def export(self, rules: Iterable[Rule], output_path: str) -> None:
+        self.captured = list(rules)
+
+def test_system_with_direct_fakes():
+    loader = FakeLoader()
+    chunker = FakeChunker()
+    extractor = FakeExtractor()
+    exporter = CapturingExporter()
+    system = ProductionRuleExtractionSystem(loader=loader, chunker=chunker, extractor=extractor, exporter=exporter)
+
+    rules = system.process_document("doc1", export_path="out.csv")
+    assert len(rules) == 2
+    assert exporter.captured is not None
+    assert exporter.captured == rules
+    assert rules[0].text.startswith("rule from chunk")
+
+def test_system_with_adapters_wrapping_callables():
+    # Wrap the same fake implementations into the adapter classes via callables
+    loader_adapter = TextLoaderAdapter(impl=FakeLoader().load)
+    chunker_adapter = ChunkerAdapter(impl=FakeChunker().chunk)
+    extractor_adapter = RuleExtractorAdapter(impl=FakeExtractor().extract)
+    exporter_adapter = ExporterAdapter(impl=CapturingExporter().export)
+
+    # When passing adapters, behavior should match direct fake objects (substitutability)
+    system_with_adapters = ProductionRuleExtractionSystem(
+        loader=loader_adapter, chunker=chunker_adapter, extractor=extractor_adapter, exporter=exporter_adapter
+    )
+    rules_from_adapters = system_with_adapters.process_document("doc1", export_path="out.csv")
+    assert len(rules_from_adapters) == 2
+    assert all(isinstance(r, Rule) for r in rules_from_adapters)
+
 # Standalone test functions (for running without pytest)
 async def test_document_processing_standalone():
     """Standalone document processing test."""
