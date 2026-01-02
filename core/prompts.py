@@ -31,9 +31,9 @@ class PromptLibrary:
             f"Document: {context.document_name}\n"
             f"Segment: {context.chunk_index + 1}\n"
             "Instructions: Return a JSON object with a `rules` key. The value must be a list of rule \n"
-            "objects describing actionable manufacturing requirements. Each rule object must include \n"
-            "rule_text, rule_category, rule_type, confidence (0-1 float), priority (high|medium|low), \n"
-            "rationale, primary_feature, unit, value, tolerance_range, supporting_quote. Avoid narration."
+            "objects describing actionable manufacturing requirements AND qualitative guidelines. Do not drop items just because they lack numbers. \n"
+            "Each rule object must include rule_text, rule_category, rule_type, confidence (0-1 float), priority (high|medium|low), \n"
+            "rationale, primary_feature, unit, value, tolerance_range, supporting_quote. Avoid narration and do not truncate long rules."
         )
 
         return (

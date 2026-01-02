@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import csv
+import hashlib
 import json
 import logging
 import os
@@ -196,6 +197,8 @@ class ProductionRuleExtractionSystem:
         results: Iterable[Union[Dict[str, Any], ExtractionSummary]],
         format: str = "json",
         output_path: Optional[Union[str, Path]] = None,
+        include_metadata: bool = True,
+        schema: str = "full",
     ) -> str:
         """Export rule extraction results to JSON, CSV, or Excel."""
 
@@ -203,16 +206,20 @@ class ProductionRuleExtractionSystem:
         if not documents:
             raise ValueError("No results provided for export")
 
-        format_normalised = format.lower()
+        format_normalised = format.lower().strip()
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         default_name = {
             "json": f"rule_extraction_{timestamp}.json",
             "csv": f"rule_extraction_{timestamp}.csv",
             "tsv": f"rule_extraction_{timestamp}.tsv",
             "xlsx": f"rule_extraction_{timestamp}.xlsx",
+            "excel": f"rule_extraction_{timestamp}.xlsx",
         }.get(format_normalised, f"rule_extraction_{timestamp}.{format_normalised}")
 
-        path = Path(output_path) if output_path else Path(default_name)
+        if output_path:
+            path = Path(output_path)
+        else:
+            path = Path("output") / "exports" / default_name
         path.parent.mkdir(parents=True, exist_ok=True)
 
         if format_normalised == "json":
@@ -222,11 +229,16 @@ class ProductionRuleExtractionSystem:
             }
             path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         else:
-            rows = self._flatten_rules(documents)
+            schema_norm = (schema or "full").strip().lower()
+            if schema_norm in {"dfm", "dfm_strict", "strict_dfm"}:
+                rows = self._flatten_rules_dfm_strict(documents)
+            else:
+                rows = self._flatten_rules(documents, include_metadata=include_metadata)
             if format_normalised in {"csv", "tsv"}:
                 delimiter = "," if format_normalised == "csv" else "\t"
                 with path.open("w", newline="", encoding="utf-8") as handle:
-                    writer = csv.DictWriter(handle, fieldnames=sorted({key for row in rows for key in row}), delimiter=delimiter)
+                    fieldnames = sorted({key for row in rows for key in row})
+                    writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter=delimiter)
                     writer.writeheader()
                     writer.writerows(rows)
             elif format_normalised in {"xlsx", "excel"}:
@@ -242,6 +254,11 @@ class ProductionRuleExtractionSystem:
 
     def get_system_stats(self) -> Dict[str, Any]:
         settings = self.settings
+        # Minimal counters (can be incremented in future enhancements)
+        processing_stats = {
+            "documents_processed": 0,
+            "rules_extracted": 0,
+        }
         return {
             "configuration": {
                 "max_rules": self.max_rules,
@@ -249,8 +266,26 @@ class ProductionRuleExtractionSystem:
                 "throttle_seconds": settings.throttle_seconds,
                 "enhanced_engine": bool(self.enhanced_engine),
                 "use_qdrant": self.use_qdrant,
-            }
+                "groq_model": getattr(settings, "groq_model", "unknown"),
+            },
+            "processing_stats": processing_stats,
         }
+
+    # ------------------------------------------------------------------
+    # Validation helpers
+    # ------------------------------------------------------------------
+
+    def validate_against_hcl_dataset(self, hcl_csv_path: str) -> Dict[str, Any]:
+        """Proxy HCL validation to the enhanced engine when available.
+
+        This provides a stable entry point for UI layers that expect the
+        legacy ``validate_against_hcl_dataset`` API on the production system.
+        """
+
+        if not self.enhanced_engine:
+            raise RuntimeError("Enhanced engine is not enabled; HCL validation is unavailable.")
+
+        return self.enhanced_engine.validate_against_hcl_dataset(hcl_csv_path)
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -292,11 +327,17 @@ class ProductionRuleExtractionSystem:
     def _build_summary(self, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
         total_rules = sum(len(doc.get("rules", [])) for doc in documents)
         successful = sum(1 for doc in documents if doc.get("status") == "success")
+        failed = sum(1 for doc in documents if doc.get("status") not in {"success", "no_rules"})
+        total_processing_time = sum(float(doc.get("processing_time") or 0.0) for doc in documents)
+        avg_processing_time = total_processing_time / len(documents) if documents else 0.0
         return {
             "generated_at": datetime.utcnow().isoformat() + "Z",
             "documents": len(documents),
             "successful_documents": successful,
+            "failed_documents": failed,
             "total_rules": total_rules,
+            "total_processing_seconds": round(total_processing_time, 3),
+            "avg_processing_seconds": round(avg_processing_time, 3),
             "average_confidence": (
                 sum(doc.get("avg_confidence", 0.0) for doc in documents if doc.get("avg_confidence")) / successful
                 if successful
@@ -304,30 +345,163 @@ class ProductionRuleExtractionSystem:
             ),
         }
 
-    def _flatten_rules(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _flatten_rules(self, documents: List[Dict[str, Any]], *, include_metadata: bool) -> List[Dict[str, Any]]:
         rows: List[Dict[str, Any]] = []
         for doc in documents:
+            base_row = {
+                "filename": doc.get("filename"),
+                "status": doc.get("status"),
+                "rule_count": doc.get("rule_count", 0),
+                "avg_confidence": doc.get("avg_confidence", 0.0),
+                "chunks_processed": doc.get("chunks_processed"),
+                "model_calls": doc.get("model_calls"),
+                "processing_time": doc.get("processing_time"),
+            }
+            if include_metadata:
+                if doc.get("document_context"):
+                    base_row["document_context"] = self._serialise_field(doc.get("document_context"))
+                if doc.get("document_metadata"):
+                    base_row["document_metadata"] = self._serialise_field(doc.get("document_metadata"))
+
             if not doc.get("rules"):
-                rows.append(
-                    {
-                        "filename": doc.get("filename"),
-                        "status": doc.get("status"),
-                        "rule_count": doc.get("rule_count", 0),
-                        "avg_confidence": doc.get("avg_confidence", 0.0),
-                    }
-                )
+                rows.append(base_row)
                 continue
 
-            for rule in doc["rules"]:
-                row = {
-                    "filename": doc.get("filename"),
-                    "status": doc.get("status"),
-                    "rule_count": doc.get("rule_count", 0),
-                    "avg_confidence": doc.get("avg_confidence", 0.0),
-                }
-                row.update(rule)
+            for idx, rule in enumerate(doc["rules"], start=1):
+                row = dict(base_row)
+                row["rule_index"] = idx
+                for key, value in rule.items():
+                    row[key] = self._serialise_field(value)
                 rows.append(row)
         return rows
+
+    def _flatten_rules_dfm_strict(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Flatten extraction results into a strict, DFM-focused tabular schema.
+
+        This intentionally avoids dumping every raw field. It provides a minimal
+        set of columns geared toward downstream DFM triage and governance.
+
+        Columns:
+          - rule_id: stable hash of normalized rule text (+ document)
+          - rule_text: rule sentence
+          - domain: where it applies (best-effort)
+          - rule_type: dimensional/material/process/general (when available)
+          - complexity: 0..1 (when available)
+          - priority: high/medium/low (importance to follow)
+          - risk: high/medium/low (impact if violated)
+          - confidence: 0..1
+          - source_document
+          - extraction_method
+        """
+
+        def _norm_text(text: str) -> str:
+            return " ".join((text or "").strip().split()).lower()
+
+        def _pick_domain(doc: Dict[str, Any], rule: Dict[str, Any]) -> str:
+            filename = (doc.get("filename") or "").strip()
+            filename_lower = filename.lower()
+            ctx = doc.get("document_context") or {}
+            tech_domain = (ctx.get("technical_domain") or "").strip()
+            if tech_domain:
+                base = tech_domain
+            elif "sheet" in filename_lower and "metal" in filename_lower:
+                base = "sheet metal"
+            else:
+                base = (ctx.get("industry_sector") or "general").strip() or "general"
+
+            primary_feature = (rule.get("primary_feature") or "").strip()
+            if primary_feature:
+                return f"{base} / {primary_feature}"
+            return base
+
+        def _priority_from_text(text: str) -> str:
+            t = _norm_text(text)
+            if any(k in t for k in [" must ", " shall ", " required ", " do not ", " never "]):
+                return "high"
+            if any(k in t for k in [" should ", " recommended "]):
+                return "medium"
+            return "low"
+
+        def _risk_from_text(text: str) -> str:
+            t = _norm_text(text)
+            high_markers = [
+                "tolerance",
+                "±",
+                "minimum",
+                "maximum",
+                "clearance",
+                "interference",
+                "thickness",
+                "radius",
+                "failure",
+                "crack",
+                "fracture",
+                "safety",
+                "critical",
+            ]
+            if any(m in t for m in high_markers):
+                return "high"
+            # Any numeric constraint usually implies measurable defect risk.
+            if any(ch.isdigit() for ch in t):
+                return "medium"
+            if any(k in t for k in ["avoid", "ensure", "prevent"]):
+                return "medium"
+            return "low"
+
+        rows: List[Dict[str, Any]] = []
+        for doc in documents:
+            rules = doc.get("rules") or []
+            if not rules:
+                continue
+
+            source_document = doc.get("filename") or doc.get("document_name") or "unknown"
+            for rule in rules:
+                rule_text = (rule.get("rule_text") or "").strip()
+                if not rule_text:
+                    continue
+
+                normalized = _norm_text(rule_text)
+                stable_basis = f"{source_document}::{normalized}".encode("utf-8")
+                rule_id = hashlib.sha1(stable_basis).hexdigest()
+
+                confidence = rule.get("confidence_score")
+                try:
+                    confidence_val = float(confidence) if confidence is not None else 0.0
+                except Exception:
+                    confidence_val = 0.0
+
+                complexity = rule.get("complexity_score")
+                try:
+                    complexity_val = float(complexity) if complexity is not None else 0.0
+                except Exception:
+                    complexity_val = 0.0
+
+                rows.append(
+                    {
+                        "rule_id": rule_id,
+                        "rule_text": rule_text,
+                        "domain": _pick_domain(doc, rule),
+                        "rule_type": (rule.get("rule_type") or "").strip() or "general",
+                        "complexity": round(max(0.0, min(1.0, complexity_val)), 4),
+                        "priority": _priority_from_text(rule_text),
+                        "risk": _risk_from_text(rule_text),
+                        "confidence": round(max(0.0, min(1.0, confidence_val)), 4),
+                        "source_document": source_document,
+                        "extraction_method": (rule.get("extraction_method") or "").strip(),
+                    }
+                )
+
+        return rows
+
+    @staticmethod
+    def _serialise_field(value: Any) -> Any:
+        if isinstance(value, set):
+            value = sorted(value)
+        if isinstance(value, tuple):
+            value = list(value)
+        if isinstance(value, (dict, list)):
+            return json.dumps(value, ensure_ascii=False)
+        return value
 
 
 __all__ = ["ProductionRuleExtractionSystem"]

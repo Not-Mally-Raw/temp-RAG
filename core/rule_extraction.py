@@ -65,8 +65,8 @@ class RuleExtractionSettings(BaseSettings):
 
     max_chunk_tokens: int = Field(default=3200)
     chunk_overlap_tokens: int = Field(default=200)
-    max_rules_per_chunk: int = Field(default=12)
-    max_rules_total: int = Field(default=80)
+    max_rules_per_chunk: int = Field(default=20)
+    max_rules_total: int = Field(default=150)
 
     max_concurrent_calls: int = Field(default=4)
     throttle_seconds: float = Field(default=0.0)
@@ -409,13 +409,56 @@ class ChunkProcessor:
 
         self.settings = settings
         self.prompts = PromptLibrary()
-        self._client = ChatGroq(
-            model=settings.groq_model,
-            api_key=settings.groq_api_key,
-            temperature=settings.temperature,
-            max_tokens=settings.max_output_tokens,
-            timeout=settings.request_timeout,
-        )
+        # Optional mock mode for local/offline development: set ALLOW_FAKE_GROQ=1
+        allow_fake = os.getenv("ALLOW_FAKE_GROQ", "0") == "1"
+        self._mock_mode = allow_fake
+        if allow_fake:
+            import types, json as _json
+
+            async def _fake_ainvoke(messages):  # type: ignore
+                # Extract last human message to synthesise simple rules
+                human_content = ""
+                for m in reversed(messages):
+                    if hasattr(m, "content"):
+                        human_content = getattr(m, "content", "")
+                        break
+                snippet = human_content[:200].replace("\n", " ")
+                fake_payload = {
+                    "rules": [
+                        {
+                            "rule_text": "Calibrate equipment before operation",
+                            "rule_category": "Setup",
+                            "rule_type": "Mandatory",
+                            "confidence": 0.95,
+                            "priority": "high",
+                            "rationale": "Baseline mock rule",
+                            "primary_feature": "calibration",
+                            "supporting_quote": snippet,
+                        },
+                        {
+                            "rule_text": "Ensure safety guards engaged",
+                            "rule_category": "Safety",
+                            "rule_type": "Mandatory",
+                            "confidence": 0.9,
+                            "priority": "high",
+                            "rationale": "Baseline mock rule",
+                            "primary_feature": "safety",
+                            "supporting_quote": snippet,
+                        },
+                    ],
+                }
+                return types.SimpleNamespace(content=f"```json\n{_json.dumps(fake_payload)}\n```")
+
+            # Minimal client shim with ainvoke attribute
+            self._client = types.SimpleNamespace(ainvoke=_fake_ainvoke)
+        else:
+            self._client = ChatGroq(
+                model=settings.groq_model,
+                api_key=settings.groq_api_key,
+                temperature=settings.temperature,
+                max_tokens=settings.max_output_tokens,
+                timeout=settings.request_timeout,
+            )
         self._rate_limiter = AsyncRateLimiter(settings.throttle_seconds)
         self.system_prompt = self.prompts.system_prompt
 
@@ -433,15 +476,22 @@ class ChunkProcessor:
         last_error_message = ""
         for attempt in range(1, self.settings.max_retries + 1):
             try:
-                response = await asyncio.wait_for(
-                    self._client.ainvoke(
-                        [
-                            SystemMessage(content=self.system_prompt),
-                            HumanMessage(content=prompt),
-                        ]
-                    ),
-                    timeout=self.settings.request_timeout,
-                )
+                if self._mock_mode:
+                    # In mock mode we bypass network and just call shim directly (no wait_for timeout enforcement)
+                    response = await self._client.ainvoke([
+                        SystemMessage(content=self.system_prompt),
+                        HumanMessage(content=prompt),
+                    ])
+                else:
+                    response = await asyncio.wait_for(
+                        self._client.ainvoke(
+                            [
+                                SystemMessage(content=self.system_prompt),
+                                HumanMessage(content=prompt),
+                            ]
+                        ),
+                        timeout=self.settings.request_timeout,
+                    )
                 raw = response.content if hasattr(response, "content") else str(response)
                 return self._parse_response(raw, document_name, chunk_index)
             except asyncio.TimeoutError:
@@ -471,12 +521,13 @@ class ChunkProcessor:
                     new_interval = max(new_interval, 2.0)
                     self._rate_limiter.set_interval(new_interval)
                     self.settings.throttle_seconds = new_interval
+                # Avoid using reserved LogRecord attribute name 'message'
                 logger.warning(
                     "model_call_failed",
                     extra={
                         "chunk_index": chunk_index,
                         "attempt": attempt,
-                        "message": last_error_message,
+                        "error_message": last_error_message,
                     },
                 )
             if attempt == self.settings.max_retries:

@@ -9,6 +9,7 @@ import logging
 import re
 import hashlib
 import time
+from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from datetime import datetime
 from dataclasses import dataclass, field
@@ -37,7 +38,8 @@ import pandas as pd
 from typing import TYPE_CHECKING, Any
 if TYPE_CHECKING:
     from .enhanced_vector_utils import EnhancedVectorManager
-from .ingest import DocumentIngester
+from .rule_extraction import DocumentLoader
+from .chunk_cache import ChunkCache, FileChunkCache
 from utils import logger
 
 # Configure structured logging
@@ -108,31 +110,31 @@ class ManufacturingRule(BaseModel):
     
     # Core fields
     rule_text: str = Field(..., description="Original rule text", max_length=500)
-    rule_category: ManufacturingCategory = Field(..., description="Manufacturing category")
-    rule_type: RuleType = Field(..., description="Type of rule")
+    rule_category: ManufacturingCategory = Field(default=ManufacturingCategory.GENERAL, description="Manufacturing category")
+    rule_type: RuleType = Field(default=RuleType.GENERAL, description="Type of rule")
     
     # Extracted entities
-    primary_feature: str = Field(..., description="Primary manufacturing feature")
+    primary_feature: Optional[str] = Field(default="", description="Primary manufacturing feature")
     secondary_feature: Optional[str] = Field(default="", description="Secondary feature if applicable")
-    primary_object: str = Field(..., description="Primary object/component")
+    primary_object: Optional[str] = Field(default="", description="Primary object/component (may be empty if not specified)")
     secondary_object: Optional[str] = Field(default="", description="Secondary object if applicable")
     
     # Constraints and specifications
-    operator: str = Field(..., description="Comparison operator (>=, <=, ==, between, etc.)")
+    operator: Optional[str] = Field(default="", description="Comparison operator (>=, <=, ==, between, etc.)")
     value: Optional[Union[float, List[float], str]] = Field(default=None, description="Numeric value or range")
     unit: Optional[str] = Field(default="", description="Unit of measurement")
     tolerance: Optional[Union[float, List[float]]] = Field(default=None, description="Tolerance value (single number or range)")
     
     # Metadata
     confidence_score: float = Field(..., ge=0.0, le=1.0, description="Extraction confidence")
-    confidence_level: ConfidenceLevel = Field(..., description="Confidence category")
-    correctness_tag: CorrectnessTag = Field(..., description="Correctness validation tag")
-    manufacturing_relevance: float = Field(..., ge=0.0, le=1.0, description="Manufacturing relevance score")
+    confidence_level: ConfidenceLevel = Field(default=ConfidenceLevel.LOW, description="Confidence category")
+    correctness_tag: CorrectnessTag = Field(default=CorrectnessTag.NEEDS_REVIEW, description="Correctness validation tag")
+    manufacturing_relevance: float = Field(default=0.5, ge=0.0, le=1.0, description="Manufacturing relevance score")
     
     # Context
     source_document: str = Field(default="", description="Source document filename")
     document_section: Optional[str] = Field(default="", description="Document section/page")
-    extraction_method: str = Field(..., description="Method used for extraction")
+    extraction_method: str = Field(default="unknown", description="Method used for extraction")
     extracted_at: datetime = Field(default_factory=datetime.utcnow)
     
     # Quality indicators
@@ -144,6 +146,36 @@ class ManufacturingRule(BaseModel):
     related_standards: List[str] = Field(default_factory=list, description="Related industry standards")
     cross_references: List[str] = Field(default_factory=list, description="Cross-referenced rules")
     
+    @validator('rule_type', pre=True, always=True)
+    def normalize_rule_type(cls, value):
+        """Normalize rule type to enum values."""
+        if value is None:
+            return RuleType.GENERAL
+        if isinstance(value, RuleType):
+            return value
+            
+        normalized = str(value).strip().lower()
+        # Map common variations
+        type_map = {
+            'dimensional specification': RuleType.DIMENSIONAL,
+            'material specification': RuleType.MATERIAL,
+            'process specification': RuleType.PROCESS,
+            'quality specification': RuleType.QUALITY,
+            'safety requirement': RuleType.SAFETY,
+            'design specification': RuleType.GENERAL,
+            'design requirement': RuleType.GENERAL,
+            'proportional specification': RuleType.DIMENSIONAL,
+        }
+        
+        if normalized in type_map:
+            return type_map[normalized]
+            
+        try:
+            return RuleType(normalized)
+        except ValueError:
+            # Fallback for unknown types
+            return RuleType.GENERAL
+
     @validator('confidence_level', pre=True, always=True)
     def set_confidence_level(cls, v, values):
         if 'confidence_score' in values:
@@ -306,6 +338,56 @@ class ManufacturingRule(BaseModel):
 
         return ManufacturingCategory.GENERAL
 
+
+class ManufacturingRuleList(BaseModel):
+    """Container model for multiple manufacturing rules per chunk.
+
+    This allows the enhanced engine to extract more than one rule from a
+    given text segment while still leveraging LangChain's structured
+    output parsing.
+    """
+
+    rules: List[ManufacturingRule] = Field(
+        default_factory=list,
+        description="List of extracted manufacturing rules for a chunk",
+    )
+
+
+class ManufacturingRuleCandidate(BaseModel):
+    """Minimal, tolerant model used to accept partial rule outputs from the LLM.
+
+    Only `rule_text` is required — other fields are optional and will be
+    reconciled later into a full `ManufacturingRule` with sensible defaults.
+    """
+
+    rule_text: str = Field(..., description="Original rule text")
+    confidence_score: Optional[float] = Field(default=0.5, ge=0.0, le=1.0)
+    rule_category: Optional[str] = Field(default=None)
+    rule_type: Optional[str] = Field(default=None)
+    primary_feature: Optional[str] = Field(default=None)
+    primary_object: Optional[str] = Field(default=None)
+    operator: Optional[str] = Field(default=None)
+    value: Optional[Any] = Field(default=None)
+    unit: Optional[Any] = Field(default=None)
+
+
+class ManufacturingRuleCandidateList(BaseModel):
+    rules: List[ManufacturingRuleCandidate] = Field(
+        default_factory=list,
+        description="List of candidate rules (tolerant schema)",
+    )
+
+class RawRuleItem(BaseModel):
+    """Lightweight representation for raw rule text returned by bulk extraction."""
+
+    text: str = Field(..., description="Raw rule text")
+    confidence_score: Optional[float] = Field(default=0.6, ge=0.0, le=1.0, description="Optional confidence")
+
+class RawRuleList(BaseModel):
+    """Container model for bulk/raw extraction responses."""
+
+    rules: List[RawRuleItem] = Field(default_factory=list, description="List of raw rule items")
+
 class RuleExtractionResult(BaseModel):
     """Complete result from enhanced rule extraction."""
     rules: List[ManufacturingRule] = Field(description="Extracted manufacturing rules")
@@ -347,12 +429,18 @@ class EnhancedConfig(BaseSettings):
     # Processing Configuration
     chunk_size: int = 800  # Token-aware chunking
     chunk_overlap: int = 400
-    max_chunks_per_document: int = 15
+    max_chunks_per_document: int = 60
+    recall_mode: bool = False
     
     # Quality thresholds
     min_confidence_threshold: float = 0.3
     min_manufacturing_relevance: float = 0.2
-    max_rules_per_document: int = 100
+    max_rules_per_document: int = 250
+
+    # Lightweight rate limiting / retry controls (enhanced engine only)
+    throttle_seconds: float = 0.0
+    max_retries: int = 2
+    retry_backoff_seconds: float = 2.0
     
     # RAG Configuration
     rag_top_k: int = 5
@@ -366,9 +454,21 @@ class EnhancedConfig(BaseSettings):
     enable_rule_clustering: bool = False
     enable_quality_scoring: bool = True
     
+    # Extraction mode: 'structured', 'raw', or 'auto'
+    extraction_mode: str = "structured"
+    allow_bulk_extraction: bool = False
+    # If Groq is unavailable or you need quick local recall, enable the
+    # heuristic keyword extractor that does not rely on LLM calls.
+    enable_local_heuristic: bool = True
+
     # Monitoring
     log_level: str = "INFO"
     enable_metrics: bool = True
+
+    # Resumable extraction (chunk cache)
+    enable_chunk_cache: bool = False
+    resume_from_cache: bool = False
+    chunk_cache_dir: str = "output/chunk_cache"
     
     class Config:
         env_file = ".env"
@@ -377,11 +477,27 @@ class EnhancedConfig(BaseSettings):
 class EnhancedRuleEngine:
     """Production-ready rule extraction engine with LangChain integration."""
     
-    def __init__(self, config: Optional[EnhancedConfig] = None,
-                 vector_manager: Optional[Any] = None):
+    def __init__(
+        self,
+        config: Optional[EnhancedConfig] = None,
+        vector_manager: Optional[Any] = None,
+        *,
+        chunk_cache: Optional[ChunkCache] = None,
+    ):
         """Initialize enhanced rule engine."""
         
         self.config = config or EnhancedConfig()
+
+        # Enable high-recall defaults when requested
+        self._recall_mode = bool(self.config.recall_mode)
+        if self._recall_mode:
+            self.config.allow_bulk_extraction = True
+            self.config.extraction_mode = "raw"
+            self.config.min_confidence_threshold = min(self.config.min_confidence_threshold, 0.1)
+            self.config.min_manufacturing_relevance = min(self.config.min_manufacturing_relevance, 0.05)
+            # Allow larger document coverage in recall mode
+            if self.config.max_chunks_per_document < 80:
+                self.config.max_chunks_per_document = 80
         
         # Validate API key (no hardcoded or placeholder keys allowed)
         if not self.config.groq_api_key or self.config.groq_api_key == "":
@@ -395,7 +511,12 @@ class EnhancedRuleEngine:
             raise ValueError("GROQ_API_KEY appears to be a placeholder or hardcoded key. Please use a secure environment variable.")
         
         self.vector_manager = vector_manager
-        self.ingester = DocumentIngester()
+        self.loader = DocumentLoader()
+
+        # Optional per-chunk cache for resumable extraction.
+        self._chunk_cache: Optional[ChunkCache] = chunk_cache
+        if self._chunk_cache is None and (self.config.enable_chunk_cache or self.config.resume_from_cache):
+            self._chunk_cache = FileChunkCache(Path(self.config.chunk_cache_dir))
         
         # Initialize tokenizer for token-aware processing
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
@@ -404,6 +525,10 @@ class EnhancedRuleEngine:
         self._preferred_model = self.config.groq_model
         self._fallback_model = "llama-3.1-8b-instant"
         self._last_llm_error: Optional[Exception] = None
+
+        # Simple per-process rate limiting state for the enhanced engine.
+        self._last_call_time: float = 0.0
+        self._tpd_blocked_until: Optional[float] = None
 
         if not self._try_configure_llm(self._preferred_model):
             if (
@@ -422,6 +547,15 @@ class EnhancedRuleEngine:
         
         # Setup structured output parsers
         self.rule_parser = PydanticOutputParser(pydantic_object=ManufacturingRule)
+        self.rule_list_parser = PydanticOutputParser(
+            pydantic_object=ManufacturingRuleList
+        )
+        # Tolerant candidate parser: accepts partial rule objects
+        self.rule_candidate_list_parser = PydanticOutputParser(
+            pydantic_object=ManufacturingRuleCandidateList
+        )
+        # Lightweight bulk/raw parser (list of short rule texts)
+        self.raw_rule_list_parser = PydanticOutputParser(pydantic_object=RawRuleList)
         self.context_parser = PydanticOutputParser(pydantic_object=DocumentContext)
         self.result_parser = PydanticOutputParser(pydantic_object=RuleExtractionResult)
         
@@ -434,6 +568,127 @@ class EnhancedRuleEngine:
         enhanced_logger.info("Enhanced rule engine initialized", 
                            model=self.config.groq_model,
                            has_vector_manager=self.vector_manager is not None)
+
+    # ------------------------------------------------------------------
+    # Internal rate limiting helpers
+    # ------------------------------------------------------------------
+
+    def _respect_tpd_limit(self) -> bool:
+        """Return False if we know the daily token limit is exhausted.
+
+        When Groq reports a tokens‑per‑day (TPD) exhaustion, we record a
+        timestamp until which further calls are very likely to fail.  All
+        subsequent LLM invocations short‑circuit until that window expires.
+        """
+
+        if self._tpd_blocked_until is None:
+            return True
+
+        now = time.time()
+        if now >= self._tpd_blocked_until:
+            self._tpd_blocked_until = None
+            return True
+
+        enhanced_logger.error(
+            "groq_daily_limit_exhausted",
+            blocked_until=self._tpd_blocked_until,
+        )
+        return False
+
+    def _update_tpd_from_error(self, error: Exception) -> None:
+        """Inspect an error message and update daily limit window if needed."""
+
+        message = str(error)
+        if "429" not in message or "tokens per day (TPD)" not in message:
+            return
+
+        # Try to parse "Please try again in XmYs" or "in Xs" style hints.
+        retry_seconds: float = 300.0  # sensible fallback ~5 minutes
+        try:
+            match = re.search(r"Please try again in (\d+)m([0-9.]+)s", message)
+            if match:
+                minutes = float(match.group(1))
+                seconds = float(match.group(2))
+                retry_seconds = max(retry_seconds, minutes * 60.0 + seconds)
+            else:
+                match = re.search(r"Please try again in ([0-9.]+)s", message)
+                if match:
+                    retry_seconds = max(retry_seconds, float(match.group(1)))
+        except Exception:  # pragma: no cover - defensive parsing
+            pass
+
+        self._tpd_blocked_until = time.time() + retry_seconds
+        enhanced_logger.error(
+            "groq_daily_limit_window_set",
+            retry_after_seconds=retry_seconds,
+        )
+
+    def _sleep_for_throttle(self) -> None:
+        """Coarse, blocking throttle between enhanced-engine calls."""
+
+        interval = max(0.0, float(self.config.throttle_seconds or 0.0))
+        if interval <= 0.0:
+            return
+
+        now = time.time()
+        delta = now - self._last_call_time
+        if delta < interval:
+            time.sleep(interval - delta)
+        self._last_call_time = time.time()
+
+    def _canonicalize_rule_text(self, text: str) -> str:
+        """Clean and normalize rule text returned by the LLM or heuristic.
+
+        Actions:
+        - Remove common page headers/footers and markers
+        - Strip leading bullets/prefixes (Note:, Tip:, •, -)
+        - Collapse whitespace, remove excessive newlines
+        - Ensure sentence ends with punctuation and is concise
+        """
+
+        if not text:
+            return ""
+
+        s = text
+        # Remove page markers like '--- Page 1 ---' or 'Page 1 of 10'
+        s = re.sub(r"-+\s*Page\s*\d+\s*-+", "", s, flags=re.IGNORECASE)
+        s = re.sub(r"Page\s*\d+(\s*of\s*\d+)?", "", s, flags=re.IGNORECASE)
+
+        # Remove common boilerplate / recycle lines
+        s = re.sub(r"Please recycle\.|Please recycle.*", "", s, flags=re.IGNORECASE)
+
+        # Remove leading prefixes (case-insensitive)
+        s = re.sub(r"(?i)^\s*(note:|tip:|•|\*|-\s+|o\s+)\s*", "", s)
+        # Remove multiple internal newlines and collapse whitespace
+        s = re.sub(r"\s+", " ", s).strip()
+
+        # Remove page number patterns like '1 / 10' or '1. '
+        s = re.sub(r"^\d+\s*/\s*\d+", "", s)
+        s = re.sub(r"^\d+\.\s*", "", s)
+
+        # Trim to reasonable length
+        s = s.strip()
+        if len(s) > 240:
+            s = s[:240].rsplit(' ', 1)[0] + '...'
+
+        # Ensure final punctuation
+        if not re.search(r"[.!?]$", s):
+            s = s + "."
+
+        return s
+
+    def _document_cache_id(self, *, filename: str, text: str) -> str:
+        """Stable identifier for chunk caching.
+
+        Uses a content hash so resume remains correct across runs.
+        """
+
+        name = Path(filename).name if filename else "document"
+        digest = hashlib.md5(text.encode("utf-8", errors="ignore")).hexdigest()[:16]
+        return f"{name}__{digest}"
+
+    def _chunk_text_hash(self, chunk_text: str) -> str:
+        return hashlib.md5(chunk_text.encode("utf-8", errors="ignore")).hexdigest()
 
     def _try_configure_llm(self, model_name: str) -> bool:
         try:
@@ -516,20 +771,21 @@ class EnhancedRuleEngine:
         
         # Enhanced rule extraction chain with structured output
         rule_system_prompt = """You are a world-class manufacturing rule extraction expert with 20+ years of experience.
-        Your task is to extract ONE specific, actionable manufacturing rule from the provided text.
+        Your task is to extract all specific, actionable manufacturing rules from the provided text.
         
         CRITICAL SUCCESS CRITERIA:
-        1. Extract ONLY rules that are specific, measurable, and actionable
-        2. Focus on dimensional tolerances, material specifications, process parameters
+        1. Extract ALL manufacturing rules present — specific, partially-specific, and implicit.
+        2. Prioritize dimensional specifications with numeric values and tolerances when present
         3. Identify implicit requirements even if not explicitly stated
         4. Assign accurate confidence scores based on specificity and clarity
         5. Properly categorize by manufacturing domain
-    6. Output numeric fields in normalized format.
+        6. Output numeric fields in normalized format.
         
     NUMERIC FIELD FORMATTING RULES:
     - Provide plain numbers without units for "value" and "tolerance".
     - If a tolerance or value is a range, return a two-element JSON array of numbers (e.g., [0.003, 0.005]).
     - Keep units exclusively in the "unit" field.
+    - If numeric values are missing, leave fields empty/null.
 
         EXTRACTION PRIORITIES (in order):
         1. Dimensional specifications with numeric values
@@ -539,11 +795,16 @@ class EnhancedRuleEngine:
         5. Safety requirements
         6. Assembly guidelines
         
+        The model MAY return multiple rules for a single text chunk when
+        several distinct, actionable requirements are present. Output a JSON
+        object with a top-level key "rules" whose value is a list of
+        manufacturing rule objects.
+        
         {format_instructions}
         
-        Return ONLY the JSON object with all required fields populated."""
+        Return ONLY the JSON object."""
         
-        rule_human_prompt = """Extract ONE manufacturing rule from this text chunk.
+        rule_human_prompt = """Extract all manufacturing rules from this text chunk.
 
         Text Chunk:
         {text_chunk}
@@ -558,12 +819,20 @@ class EnhancedRuleEngine:
         
         Manufacturing Keywords Detected: {manufacturing_keywords}
         
-        Extract the most specific and actionable rule with highest confidence."""
-        
+        Extract every manufacturing rule present in this chunk. Return a JSON object with a top-level key `rules` whose value is a list of rule objects. Each rule object must include at least `rule_text` and `confidence_score`. Optional fields (feature, object, operator, value, unit, tolerance) can be empty or null if not present. Do NOT invent numeric values. If no rules found, return {{"rules": []}} and nothing else."""        
+        # Single-rule chain kept for backwards compatibility in callers that
+        # still expect one rule per chunk.
         self.rule_extraction_chain = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(rule_system_prompt),
             HumanMessagePromptTemplate.from_template(rule_human_prompt)
         ]) | self.llm | self.rule_parser
+
+        # Multi-rule chain used by the new high-recall extraction path.
+        # Use the tolerant candidate parser so we don't lose partial rule objects.
+        self.rule_list_extraction_chain = ChatPromptTemplate.from_messages([
+            SystemMessagePromptTemplate.from_template(rule_system_prompt),
+            HumanMessagePromptTemplate.from_template(rule_human_prompt)
+        ]) | self.llm | self.rule_candidate_list_parser
         
         # Rule enhancement chain for quality improvement
         enhancement_system_prompt = """You are a manufacturing standards expert. Your task is to enhance and validate extracted rules.
@@ -597,6 +866,30 @@ class EnhancedRuleEngine:
             SystemMessagePromptTemplate.from_template(enhancement_system_prompt),
             HumanMessagePromptTemplate.from_template(enhancement_human_prompt)
         ]) | self.llm | self.rule_parser
+
+        # Bulk/raw extraction chain - returns a flat list of rule texts for
+        # high-recall extraction modes. This is intentionally lightweight
+        # and favors recall over strict structured output.
+        bulk_system_prompt = """You are a manufacturing engineering expert. 
+        Your task is to identify ALL distinct, actionable manufacturing rules or guidelines present in the given text. 
+        Favor recall: return every plausible rule even if some are partial or lack numeric detail. 
+        Do NOT truncate longer rules; keep full sentences. Remove page numbers, headers, and leading prefixes like 'Note:' or 'Tip:'. Do not deduplicate inside the model.
+        Output a JSON object with the following format:
+        {{"rules": [{{"text": "<rule text>", "confidence_score": 0.0}}, ...]}}
+        If there are no rules, return {{"rules": []}} and do not output any extra text or commentary.
+        """
+
+        bulk_human_prompt = """Extract every manufacturing rule sentence or brief guideline from the following text chunk. 
+
+        Text Chunk:
+        {text_chunk}
+
+        Return EXACTLY the JSON object described in the system prompt. Ensure each rule text is a single concise sentence and avoid including page headers or list markers."""
+
+        self.bulk_extraction_chain = ChatPromptTemplate.from_messages([
+            SystemMessagePromptTemplate.from_template(bulk_system_prompt),
+            HumanMessagePromptTemplate.from_template(bulk_human_prompt)
+        ]) | self.llm | self.raw_rule_list_parser
     
     def _initialize_quality_assessors(self):
         """Initialize quality assessment tools."""
@@ -626,6 +919,39 @@ class EnhancedRuleEngine:
             stop_words='english',
             ngram_range=(1, 3)
         )
+
+    def _rerank_rag_context(
+        self,
+        query: str,
+        contexts: List[Dict[str, Any]],
+        *,
+        top_k: int,
+    ) -> List[Dict[str, Any]]:
+        """Lightweight local reranker for retrieved context.
+
+        Keeps dependencies minimal by using TF-IDF cosine similarity.
+        This improves relevance ordering when the vector store returns noisy hits.
+        """
+
+        if not contexts or top_k <= 0:
+            return []
+
+        texts = [str(c.get("text", "")) for c in contexts]
+        query_text = str(query or "")
+        if not query_text.strip():
+            return contexts[:top_k]
+
+        try:
+            vectorizer = TfidfVectorizer(stop_words="english", ngram_range=(1, 2), max_features=3000)
+            matrix = vectorizer.fit_transform([query_text] + texts)
+            query_vec = matrix[0]
+            ctx_vecs = matrix[1:]
+            # Cosine similarity since TF-IDF vectors are L2 normalized by default in sklearn.
+            sims = (ctx_vecs @ query_vec.T).toarray().reshape(-1)
+            ranked = [c for _, c in sorted(zip(sims, contexts), key=lambda x: x[0], reverse=True)]
+            return ranked[:top_k]
+        except Exception:
+            return contexts[:top_k]
     
     def count_tokens(self, text: str) -> int:
         """Count tokens in text using tiktoken."""
@@ -639,6 +965,7 @@ class EnhancedRuleEngine:
         
         chunks = []
         current_chunk = ""
+        current_sentences: List[str] = []
         current_tokens = 0
         manufacturing_score = 0
         
@@ -662,18 +989,22 @@ class EnhancedRuleEngine:
                 
                 # Start new chunk with overlap
                 if self.config.chunk_overlap > 0:
-                    overlap_sentences = sentences[-2:] if len(sentences) > 2 else sentences
-                    current_chunk = " ".join(overlap_sentences) + " " + sentence
+                    # IMPORTANT: overlap must come from the *current* chunk, not the full document.
+                    overlap_sentences = current_sentences[-2:] if len(current_sentences) > 2 else current_sentences
+                    current_sentences = list(overlap_sentences) + [sentence]
+                    current_chunk = " ".join(current_sentences)
                     current_tokens = self.count_tokens(current_chunk)
                 else:
                     current_chunk = sentence
                     current_tokens = sentence_tokens
+                    current_sentences = [sentence]
                 
                 manufacturing_score = mfg_score
             else:
                 current_chunk += " " + sentence
                 current_tokens += sentence_tokens
                 manufacturing_score += mfg_score
+                current_sentences.append(sentence)
         
         # Add final chunk
         if current_chunk.strip():
@@ -684,18 +1015,44 @@ class EnhancedRuleEngine:
                 'sentence_count': len(re.split(r'[.!?]', current_chunk))
             })
         
-        # Sort by manufacturing relevance and return top chunks
-        chunks.sort(key=lambda x: x['manufacturing_score'], reverse=True)
-        return chunks[:self.config.max_chunks_per_document]
+        if not chunks:
+            return []
+
+        # Preserve chronological coverage; downsample evenly only if we exceed the cap
+        max_chunks = max(1, int(self.config.max_chunks_per_document)) if self.config.max_chunks_per_document else len(chunks)
+        if len(chunks) > max_chunks:
+            # Evenly sample across the document so we do not lose coverage
+            if max_chunks == 1:
+                return [chunks[0]]
+
+            positions = [
+                round(i * (len(chunks) - 1) / (max_chunks - 1))
+                for i in range(max_chunks)
+            ]
+            # Preserve order and drop any accidental duplicates from rounding
+            seen = set()
+            selected = []
+            for pos in positions:
+                if pos in seen:
+                    continue
+                seen.add(pos)
+                selected.append(chunks[pos])
+            return selected
+
+        return chunks
     
     def analyze_document_context(self, text: str, *, _retry: bool = True) -> DocumentContext:
         """Analyze document context using LangChain structured output."""
         
         try:
+            if not self._respect_tpd_limit():
+                return DocumentContext()
+
             # Prepare text for analysis (first 2000 characters)
             analysis_text = text[:2000] if len(text) > 2000 else text
             
             # Run context analysis chain
+            self._sleep_for_throttle()
             context = self.context_chain.invoke({
                 'document_text': analysis_text,
                 'format_instructions': self.context_parser.get_format_instructions()
@@ -718,6 +1075,7 @@ class EnhancedRuleEngine:
             return context
             
         except Exception as e:
+            self._update_tpd_from_error(e)
             if _retry and self._ensure_llm_available(e):
                 return self.analyze_document_context(text, _retry=False)
             enhanced_logger.error("Context analysis failed", error=str(e))
@@ -810,6 +1168,244 @@ class EnhancedRuleEngine:
                 return None
         
         return None
+
+    def extract_rules_from_chunk(
+        self,
+        text_chunk: str,
+        document_context: DocumentContext,
+        rag_context: List[Dict] = None,
+        *,
+        _retry: bool = True,
+    ) -> Tuple[List[ManufacturingRule], int]:
+        """Extract multiple rules from a single text chunk.
+
+        Returns a tuple (accepted_rules, candidate_count) where candidate_count
+        represents how many candidate rule items were returned by the LLM or
+        heuristic path for diagnostics.
+        """
+        """Extract multiple rules from a single text chunk.
+
+        This is the new high-recall path. It reuses the same prompts as the
+        legacy single-rule flow but parses into a ``ManufacturingRuleList``
+        container so several rules can be returned for a single chunk.
+        """
+
+        if not self._is_high_value_chunk(text_chunk):
+            enhanced_logger.debug("Skipping low-value chunk", chunk_preview=text_chunk[:50])
+            return [], 0
+
+        # NOTE: We deliberately skip the enhancement loop here to avoid
+        # multiplying API calls by the number of rules per chunk. Instead we
+        # rely on quality thresholds and downstream post-processing.
+
+        try:
+            if not self._respect_tpd_limit():
+                return [], 0
+
+            chunk_lower = text_chunk.lower()
+            detected_keywords: List[str] = []
+            for _, keywords in self.manufacturing_keywords.items():
+                detected_keywords.extend([kw for kw in keywords if kw in chunk_lower])
+
+            rag_context_str = ""
+            if rag_context:
+                rag_context_str = "\n".join(
+                    [f"- {ctx.get('text', '')[:100]}..." for ctx in rag_context[:3]]
+                )
+
+            self._sleep_for_throttle()
+            # Parse tolerant candidate outputs (may be partial/optional fields)
+            candidate_list: ManufacturingRuleCandidateList = self.rule_list_extraction_chain.invoke({
+                'text_chunk': text_chunk,
+                'industry_sector': document_context.industry_sector,
+                'technical_domain': document_context.technical_domain,
+                'document_type': document_context.document_type,
+                'rag_context': rag_context_str,
+                'manufacturing_keywords': ", ".join(detected_keywords),
+                'format_instructions': self.rule_candidate_list_parser.get_format_instructions(),
+            })
+
+            if self.config.api_request_delay:
+                time.sleep(self.config.api_request_delay)
+
+            # Convert candidates into full ManufacturingRule objects with defaults
+            accepted: List[ManufacturingRule] = []
+            for idx, candidate in enumerate(candidate_list.rules):
+                try:
+                    # Fill defaults conservatively; do not invent numbers
+                    confidence = float(candidate.confidence_score or 0.5)
+                    m = ManufacturingRule(
+                        rule_text=candidate.rule_text[:500],
+                        rule_category=(candidate.rule_category or ManufacturingCategory.GENERAL),
+                        rule_type=(candidate.rule_type or RuleType.GENERAL),
+                        primary_feature=(candidate.primary_feature or ""),
+                        secondary_feature="",
+                        primary_object=(candidate.primary_object or ""),
+                        secondary_object="",
+                        operator=(candidate.operator or ""),
+                        value=candidate.value if candidate.value is not None else None,
+                        unit=(candidate.unit if isinstance(candidate.unit, str) else ", ".join(candidate.unit) if isinstance(candidate.unit, list) else str(candidate.unit) if candidate.unit else ""),
+                        tolerance=None,
+                        confidence_score=confidence,
+                        confidence_level=ConfidenceLevel.HIGH if confidence>=0.8 else ConfidenceLevel.MEDIUM if confidence>=0.6 else ConfidenceLevel.LOW,
+                        correctness_tag=CorrectnessTag.NEEDS_REVIEW,
+                        manufacturing_relevance=0.5,
+                        source_document="",
+                        document_section="",
+                        extraction_method="langchain_structured_candidate",
+                    )
+                    # Compute quick derived fields
+                            # Canonicalize rule text for consistency
+                    text_clean = self._canonicalize_rule_text(candidate.rule_text)
+                    m.readability_score = flesch_reading_ease(text_clean)
+                    m.complexity_score = len(detected_keywords) / len(text_clean.split()) if text_clean.split() else 0
+                    m.rule_text = text_clean[:500]
+
+                    # Apply quality filter conservatively
+                    if self._is_rule_quality_acceptable(m):
+                        accepted.append(m)
+                    else:
+                        # Keep lower-quality candidates if we are in raw/full coverage modes
+                        if self.config.allow_bulk_extraction or self.config.extraction_mode == 'raw':
+                            accepted.append(m)
+                except Exception as e:
+                    enhanced_logger.warning("Failed to convert candidate to ManufacturingRule", index=idx, error=str(e))
+
+            enhanced_logger.debug("Candidates converted", candidates=len(candidate_list.rules), accepted=len(accepted))
+
+            # Record per-chunk stats for diagnostics
+            per_chunk_stats = {
+                'chunk_index': 0,  # Will be set by caller
+                'token_count': 0,  # Will be set by caller
+                'manufacturing_score': 0,  # Will be set by caller
+                'candidate_count': len(candidate_list.rules),
+                'accepted_count': len(accepted),
+            }
+            
+            # If configured for high-recall, run lightweight raw/bulk extraction
+            if self.config.allow_bulk_extraction or self.config.extraction_mode == 'raw':
+                try:
+                    raw_rules = self.extract_raw_rules_from_chunk(text_chunk, document_context, rag_context)
+                    # Merge: prefer structured rules when duplicates exist
+                    existing_texts = {r.rule_text.strip().lower() for r in accepted}
+                    for rr in raw_rules:
+                        rr.rule_text = self._canonicalize_rule_text(rr.rule_text)
+                        if rr.rule_text.strip().lower() in existing_texts:
+                            continue
+                        accepted.append(rr)
+                except Exception as e:
+                    enhanced_logger.warning("Raw bulk extraction failed", error=str(e))
+
+            # If nothing found and local heuristics enabled, fall back to a
+            # simple rule-at-sentence heuristic (no LLM cost) to boost recall.
+            if not accepted and self.config.enable_local_heuristic:
+                try:
+                    heur_rules = self._heuristic_extract_from_chunk(text_chunk, document_context)
+                    accepted.extend(heur_rules)
+                except Exception as e:
+                    enhanced_logger.warning("Local heuristic extraction failed", error=str(e))
+
+            return accepted, len(candidate_list.rules)
+        except Exception as e:
+            self._update_tpd_from_error(e)
+            if _retry and self._ensure_llm_available(e):
+                return self.extract_rules_from_chunk(
+                    text_chunk,
+                    document_context,
+                    rag_context,
+                    _retry=False,
+                )
+            enhanced_logger.error(
+                "Rule list extraction failed",
+                chunk_preview=text_chunk[:100],
+                error=str(e),
+            )
+            return [], 0
+
+    def extract_raw_rules_from_chunk(
+        self,
+        text_chunk: str,
+        document_context: DocumentContext,
+        rag_context: List[Dict] = None,
+        *,
+        _retry: bool = True,
+    ) -> List[ManufacturingRule]:
+        """Lightweight raw/bulk extraction returning simple rule texts.
+
+        This method favors recall and returns rules wrapped as
+        `ManufacturingRule` objects with conservative default metadata.
+        """
+
+        if not self._is_high_value_chunk(text_chunk):
+            enhanced_logger.debug("Skipping low-value chunk (raw)", chunk_preview=text_chunk[:50])
+            return []
+
+        try:
+            if not self._respect_tpd_limit():
+                return []
+
+            chunk_lower = text_chunk.lower()
+            detected_keywords: List[str] = []
+            for _, keywords in self.manufacturing_keywords.items():
+                detected_keywords.extend([kw for kw in keywords if kw in chunk_lower])
+
+            rag_context_str = ""
+            if rag_context:
+                rag_context_str = "\n".join(
+                    [f"- {ctx.get('text', '')[:100]}..." for ctx in rag_context[:3]]
+                )
+
+            self._sleep_for_throttle()
+            raw_list: RawRuleList = self.bulk_extraction_chain.invoke({
+                'text_chunk': text_chunk,
+                'format_instructions': self.raw_rule_list_parser.get_format_instructions(),
+            })
+
+            if self.config.api_request_delay:
+                time.sleep(self.config.api_request_delay)
+
+            wrapped: List[ManufacturingRule] = []
+            for item in raw_list.rules:
+                text = item.text.strip()
+                if not text:
+                    continue
+                try:
+                    # Canonicalize raw rule text for consistent downstream merging
+                    text_clean = self._canonicalize_rule_text(text)
+                    rule = ManufacturingRule(
+                        rule_text=text_clean[:500],
+                        rule_category=ManufacturingCategory.GENERAL,
+                        rule_type=RuleType.GENERAL,
+                        primary_feature="",
+                        secondary_feature="",
+                        primary_object="",
+                        secondary_object="",
+                        operator="",
+                        value=None,
+                        unit="",
+                        tolerance=None,
+                        confidence_score=float(getattr(item, 'confidence_score', 0.6) or 0.6),
+                        confidence_level=ConfidenceLevel.MEDIUM,
+                        correctness_tag=CorrectnessTag.NEEDS_REVIEW,
+                        manufacturing_relevance=0.5,
+                        source_document="",
+                        document_section="",
+                        extraction_method="raw_bulk",
+                    )
+                    rule.readability_score = flesch_reading_ease(text_clean)
+                    rule.complexity_score = len(detected_keywords) / len(text_clean.split()) if text_clean.split() else 0
+                    wrapped.append(rule)
+                except Exception as e:
+                    enhanced_logger.warning("Failed to wrap raw rule into ManufacturingRule", error=str(e), rule_text=text[:200])
+
+            return wrapped
+
+        except Exception as e:
+            self._update_tpd_from_error(e)
+            if _retry and self._ensure_llm_available(e):
+                return self.extract_raw_rules_from_chunk(text_chunk, document_context, rag_context, _retry=False)
+            enhanced_logger.error("Raw rule extraction failed", chunk_preview=text_chunk[:100], error=str(e))
+            return []
     
     async def extract_rules_parallel(self, text: str, filename: str = "") -> RuleExtractionResult:
         """Extract rules using parallel processing for production speed."""
@@ -828,52 +1424,145 @@ class EnhancedRuleEngine:
                                chunk_count=len(chunks),
                                total_tokens=sum(c['token_count'] for c in chunks))
             
-            # Step 3: Parallel rule extraction
-            extraction_tasks = []
+            # Step 3: Rule extraction (multi-rule per chunk)
+            rules: List[ManufacturingRule] = []
+            per_chunk_stats_list: List[Dict[str, Any]] = []
+            tpd_aborted = False
+            tpd_blocked_until: Optional[float] = None
+
+            document_cache_id = ""
+            if self._chunk_cache is not None:
+                document_cache_id = self._document_cache_id(filename=filename or "ad_hoc.txt", text=text)
+
             for chunk_data in chunks:
-                # Get RAG context for chunk if available
-                rag_context = []
+                chunk_index = len(per_chunk_stats_list)
+                chunk_text = chunk_data['text']
+
+                # Resume: reuse cached chunk extraction results when available.
+                if self._chunk_cache is not None and self.config.resume_from_cache:
+                    cached = self._chunk_cache.get(document_id=document_cache_id, chunk_index=chunk_index)
+                    if cached and cached.get("chunk_text_hash") == self._chunk_text_hash(chunk_text):
+                        cached_rules = cached.get("rules") or []
+                        cached_candidate_count = int(cached.get("candidate_count") or 0)
+                        restored: List[ManufacturingRule] = []
+                        for item in cached_rules:
+                            try:
+                                restored.append(ManufacturingRule(**item))
+                            except Exception:
+                                continue
+
+                        for rule in restored:
+                            rule.source_document = filename
+                            rules.append(rule)
+
+                        per_chunk_stats_list.append({
+                            'chunk_index': chunk_index,
+                            'token_count': chunk_data.get('token_count', 0),
+                            'manufacturing_score': chunk_data.get('manufacturing_score', 0),
+                            'candidate_count': cached_candidate_count,
+                            'accepted_count': len(restored),
+                            'cached': True,
+                        })
+                        continue
+
+                # If we've hit the Groq daily TPD window, stop further expensive calls
+                if not self._respect_tpd_limit():
+                    tpd_aborted = True
+                    tpd_blocked_until = self._tpd_blocked_until
+                    enhanced_logger.warning("TPD window active, aborting remaining chunks to avoid 429s")
+                    break
+
+                rag_context: List[Dict[str, Any]] = []
                 if self.vector_manager and self.config.enable_rag_enhancement:
                     rag_context = self.vector_manager.similarity_search(
-                        chunk_data['text'], 
+                        chunk_data['text'],
                         top_k=self.config.rag_top_k,
-                        score_threshold=self.config.rag_score_threshold
+                        score_threshold=self.config.rag_score_threshold,
                     )
-                
-                # Create extraction task
-                task = self.extract_single_rule(
-                    chunk_data['text'], 
-                    document_context, 
-                    rag_context
+                    # Local rerank to improve relevance ordering
+                    rag_context = self._rerank_rag_context(
+                        chunk_data['text'],
+                        rag_context,
+                        top_k=min(self.config.rag_top_k, 8),
+                    )
+
+                chunk_rules, candidate_count = self.extract_rules_from_chunk(
+                    chunk_text,
+                    document_context,
+                    rag_context,
                 )
-                extraction_tasks.append(task)
-            
-            # Execute extractions (simulated parallel for now)
-            rules = []
-            for task in extraction_tasks:
-                if task:
-                    rule = task  # In real async, this would be awaited
-                    if rule and rule.confidence_score >= self.config.min_confidence_threshold:
-                        rule.source_document = filename
-                        rules.append(rule)
-            
-            # Step 4: Post-processing
-            rules = self._post_process_rules(rules)
+
+                for rule in chunk_rules:
+                    rule.source_document = filename
+                    rules.append(rule)
+
+                # Collect per-chunk diagnostics
+                per_chunk_stats_list.append({
+                    'chunk_index': chunk_index,
+                    'token_count': chunk_data.get('token_count', 0),
+                    'manufacturing_score': chunk_data.get('manufacturing_score', 0),
+                    'candidate_count': candidate_count,
+                    'accepted_count': len(chunk_rules),
+                    'cached': False,
+                })
+
+                # Persist chunk results for resume.
+                if self._chunk_cache is not None and (self.config.enable_chunk_cache or self.config.resume_from_cache):
+                    try:
+                        self._chunk_cache.set(
+                            document_id=document_cache_id,
+                            chunk_index=chunk_index,
+                            payload={
+                                'chunk_text_hash': self._chunk_text_hash(chunk_text),
+                                'candidate_count': int(candidate_count),
+                                'rules': [r.dict() for r in chunk_rules],
+                                'model': self.config.groq_model,
+                                'extraction_mode': self.config.extraction_mode,
+                                'created_at': datetime.utcnow().isoformat(),
+                            },
+                        )
+                    except Exception as e:  # pragma: no cover
+                        enhanced_logger.warning("chunk_cache_write_failed", error=str(e))
+
+                # Soft guard: avoid unbounded growth before post-processing
+                if len(rules) >= self.config.max_rules_per_document * 3:
+                    break
+
+            # Step 4: Post-processing with detailed stats
+            rules, post_stats = self._post_process_rules(rules)
             
             # Calculate processing time
             processing_time = (datetime.utcnow() - start_time).total_seconds()
             
+            extraction_stats: Dict[str, Any] = {
+                'total_chunks': len(chunks),
+                'processed_chunks': len(per_chunk_stats_list),
+                'rules_extracted': len(rules),
+                'avg_confidence': sum(r.confidence_score for r in rules) / len(rules) if rules else 0,
+                'manufacturing_density': document_context.manufacturing_density,
+                'high_confidence_rules': len([r for r in rules if r.confidence_level == ConfidenceLevel.HIGH]),
+                'raw_rules_before_postprocessing': post_stats.get('raw_rules_before_postprocessing', 0),
+                'rules_after_deduplication': post_stats.get('rules_after_deduplication', 0),
+                'rules_after_quality_filter': post_stats.get('rules_after_quality_filter', 0),
+                'rules_after_clustering': post_stats.get('rules_after_clustering', 0),
+                'rules_before_cap': post_stats.get('rules_before_cap', 0),
+                'max_rules_cap': post_stats.get('max_rules_cap', int(self.config.max_rules_per_document)),
+                'hit_rule_cap': post_stats.get('hit_rule_cap', False),
+                'per_chunk_stats': per_chunk_stats_list if 'per_chunk_stats_list' in locals() else [],
+                'tpd_aborted': bool(tpd_aborted),
+                'tpd_blocked_until': tpd_blocked_until,
+            }
+
+            if tpd_aborted:
+                raw_before = int(extraction_stats.get('raw_rules_before_postprocessing') or 0)
+                extraction_stats['status'] = 'partial_rate_limited' if raw_before > 0 else 'rate_limited'
+                extraction_stats['aborted_reason'] = 'tpd'
+
             # Create result
             result = RuleExtractionResult(
                 rules=rules,
                 document_metadata=document_context.dict(),
-                extraction_stats={
-                    'total_chunks': len(chunks),
-                    'rules_extracted': len(rules),
-                    'avg_confidence': sum(r.confidence_score for r in rules) / len(rules) if rules else 0,
-                    'manufacturing_density': document_context.manufacturing_density,
-                    'high_confidence_rules': len([r for r in rules if r.confidence_level == ConfidenceLevel.HIGH])
-                },
+                extraction_stats=extraction_stats,
                 processing_time=processing_time,
                 token_usage=token_usage
             )
@@ -895,34 +1584,125 @@ class EnhancedRuleEngine:
                 token_usage=token_usage
             )
     
-    def _post_process_rules(self, rules: List[ManufacturingRule]) -> List[ManufacturingRule]:
-        """Post-process rules with deduplication and quality enhancement."""
-        
+    def _post_process_rules(
+        self,
+        rules: List[ManufacturingRule],
+    ) -> Tuple[List[ManufacturingRule], Dict[str, Any]]:
+        """Post-process rules with deduplication and quality enhancement.
+
+        Returns both the final rule list and a small diagnostics dictionary
+        describing how many rules survived each stage. This is surfaced back
+        to callers for analytics/debugging.
+        """
+
+        stats: Dict[str, Any] = {
+            'raw_rules_before_postprocessing': len(rules),
+            'rules_after_deduplication': 0,
+            'rules_after_quality_filter': 0,
+            'rules_after_clustering': 0,
+            'rules_before_cap': 0,
+            'max_rules_cap': int(self.config.max_rules_per_document),
+            'hit_rule_cap': False,
+        }
+
         if not rules:
-            return rules
-        
+            return rules, stats
+
         # Step 1: Semantic deduplication
         unique_rules = self._deduplicate_semantic(rules)
-        
-        # Step 2: Quality filtering
-        filtered_rules = [
-            rule for rule in unique_rules 
-            if (rule.confidence_score >= self.config.min_confidence_threshold and
-                rule.manufacturing_relevance >= self.config.min_manufacturing_relevance)
-        ]
-        
-        # Step 3: Log escalation cases
+        stats['rules_after_deduplication'] = len(unique_rules)
+
+        # Step 2: Quality filtering (relaxed or strict based on mode)
+        if getattr(self, "_recall_mode", False):
+            quality_filtered = unique_rules  # defer filtering; keep recall high
+        else:
+            quality_filtered = [
+                rule
+                for rule in unique_rules
+                if (
+                    rule.confidence_score >= self.config.min_confidence_threshold
+                    and rule.manufacturing_relevance
+                    >= self.config.min_manufacturing_relevance
+                )
+            ]
+        stats['rules_after_quality_filter'] = len(quality_filtered)
+
+        # Step 3: Log escalation cases (based on unique, pre-filter rules)
         self._log_escalation_cases(unique_rules)
-        
+
         # Step 4: Clustering for similar rules
-        if self.config.enable_rule_clustering and len(filtered_rules) > 5:
-            filtered_rules = self._cluster_similar_rules(filtered_rules)
-        
-        # Step 5: Sort by confidence and limit
-        filtered_rules.sort(key=lambda x: x.confidence_score, reverse=True)
-        
-        return filtered_rules[:self.config.max_rules_per_document]
+        clustered_rules = quality_filtered
+        if self.config.enable_rule_clustering and len(quality_filtered) > 5:
+            clustered_rules = self._cluster_similar_rules(quality_filtered)
+        stats['rules_after_clustering'] = len(clustered_rules)
+
+        # Step 5: Sort by confidence and enforce document-level cap
+        clustered_rules.sort(key=lambda x: x.confidence_score, reverse=True)
+        stats['rules_before_cap'] = len(clustered_rules)
+        stats['hit_rule_cap'] = bool(len(clustered_rules) > int(self.config.max_rules_per_document))
+        final_rules = clustered_rules[: self.config.max_rules_per_document]
+
+        return final_rules, stats
     
+    def _heuristic_extract_from_chunk(self, text_chunk: str, document_context: DocumentContext) -> List[ManufacturingRule]:
+        """A cheap, local heuristic extractor that identifies candidate rule sentences.
+
+        This is used when high-recall is desired but the LLM is unavailable or
+        when the user enables the local heuristic mode. It favors recall and
+        returns conservative, low-confidence rule candidates.
+        """
+
+        candidates: List[ManufacturingRule] = []
+        sentences = re.split(r'(?<=[.!?])\s+', text_chunk)
+        for s in sentences:
+            s_clean = s.strip()
+            if not s_clean:
+                continue
+
+            lower = s_clean.lower()
+            # Heuristic triggers: must/shall, numeric values, measurement units, high-priority keywords
+            trigger = False
+            if any(kw in lower for kw in self.manufacturing_keywords['high_priority']):
+                trigger = True
+            if re.search(r'\b(\d+\.?\d*|\d*\.?\d+)\b', s_clean):
+                trigger = True
+            if any(unit in lower for unit in ['mm', 'cm', 'inch', 'inches', 'kg', 'g']):
+                trigger = True
+            if 'shall' in lower or 'must' in lower:
+                trigger = True
+
+            if not trigger:
+                continue
+
+            try:
+                rule = ManufacturingRule(
+                    rule_text=s_clean[:500],
+                    rule_category=ManufacturingCategory.GENERAL,
+                    rule_type=RuleType.GENERAL,
+                    primary_feature="",
+                    secondary_feature="",
+                    primary_object="",
+                    secondary_object="",
+                    operator="",
+                    value=None,
+                    unit="",
+                    tolerance=None,
+                    confidence_score=0.45,
+                    confidence_level=ConfidenceLevel.LOW,
+                    correctness_tag=CorrectnessTag.NEEDS_REVIEW,
+                    manufacturing_relevance=0.45,
+                    source_document="",
+                    document_section="",
+                    extraction_method="heuristic_local",
+                )
+                rule.readability_score = flesch_reading_ease(s_clean)
+                rule.complexity_score = len([kw for kw in self.manufacturing_keywords['high_priority'] if kw in lower])
+                candidates.append(rule)
+            except Exception as e:
+                enhanced_logger.warning("Heuristic rule wrapping failed", error=str(e), text_preview=s_clean[:80])
+
+        return candidates
+
     def _deduplicate_semantic(self, rules: List[ManufacturingRule]) -> List[ManufacturingRule]:
         """Advanced semantic deduplication using text similarity."""
         
@@ -937,12 +1717,15 @@ class EnhancedRuleEngine:
             tfidf_matrix = self.tfidf_vectorizer.fit_transform(rule_texts)
             similarity_matrix = (tfidf_matrix * tfidf_matrix.T).toarray()
             
-            # Identify duplicates (similarity > 0.8)
+            # Identify duplicates (similarity threshold depends on mode).
+            # In recall mode we dedupe less aggressively to avoid accidentally
+            # merging distinct rules that share similar phrasing.
+            similarity_threshold = 0.9 if getattr(self, "_recall_mode", False) else 0.8
             unique_indices = []
             for i, rule in enumerate(rules):
                 is_duplicate = False
                 for j in unique_indices:
-                    if similarity_matrix[i][j] > 0.8:
+                    if similarity_matrix[i][j] > similarity_threshold:
                         # Keep the rule with higher confidence
                         if rule.confidence_score > rules[j].confidence_score:
                             unique_indices.remove(j)
@@ -1040,7 +1823,11 @@ class EnhancedRuleEngine:
         total_words = len(text_chunk.split())
         manufacturing_density = (high_priority_count + manufacturing_count) / total_words if total_words > 0 else 0
         
-        # VERY RELAXED: Accept almost anything with manufacturing keywords or numbers
+        # In recall mode, accept nearly all non-empty chunks to preserve coverage
+        if getattr(self, "_recall_mode", False):
+            return len(text_chunk.strip()) > 10
+
+        # Default relaxed logic: accept almost anything with manufacturing cues
         is_high_value = (
             manufacturing_density >= 0.005 or  # ultra-low threshold
             has_numbers or  # any numbers
@@ -1048,36 +1835,39 @@ class EnhancedRuleEngine:
             high_priority_count > 0 or  # ANY high priority keyword
             manufacturing_count > 0  # ANY manufacturing keyword
         )
-        
+
         return is_high_value
     
     def _is_rule_quality_acceptable(self, rule: ManufacturingRule) -> bool:
         """Check if extracted rule meets quality standards."""
-        
-        # Must have minimum confidence
+        # Recall mode: keep liberal; rely on downstream dedupe instead of strict gating
+        if getattr(self, "_recall_mode", False):
+            if rule.confidence_score < max(0.05, self.config.min_confidence_threshold):
+                return False
+            if rule.manufacturing_relevance < max(0.05, self.config.min_manufacturing_relevance):
+                return False
+            return len(rule.rule_text.strip()) >= 8
+
+        # Default precision-oriented checks
         min_confidence = max(self.config.min_confidence_threshold, 0.3)
         if rule.confidence_score < min_confidence:
             return False
-        
-        # Must have manufacturing relevance
+
         min_relevance = max(self.config.min_manufacturing_relevance, 0.15)
         if rule.manufacturing_relevance < min_relevance:
             return False
-        
-        # Must have some numeric content or specific terminology
+
         rule_text_lower = rule.rule_text.lower()
         has_specific_terms = any(kw in rule_text_lower for kw in self.manufacturing_keywords['high_priority'])
         has_numbers = bool(re.search(r'\d+', rule.rule_text))
         has_modal_requirement = any(m in rule_text_lower for m in [' shall ', ' must ', ' should '])
 
-        # Accept if numeric or strongly worded requirement even without numbers
         if not (has_specific_terms or has_numbers or has_modal_requirement):
             return False
-        
-        # Must have reasonable length
+
         if len(rule.rule_text.strip()) < 15:
             return False
-        
+
         return True
     
     def _enhance_rule_quality(self, rule: ManufacturingRule, original_chunk: str, 
@@ -1085,6 +1875,8 @@ class EnhancedRuleEngine:
         """Attempt to enhance rule quality using additional context."""
         
         try:
+            if not self._respect_tpd_limit():
+                return rule
             # Prepare enhancement context
             similar_rules_str = ""
             if self.vector_manager:
@@ -1095,6 +1887,7 @@ class EnhancedRuleEngine:
                     similar_rules_str = "\n".join([s['text'][:100] for s in similar])
             
             # Run enhancement chain
+            self._sleep_for_throttle()
             enhanced_rule = self.enhancement_chain.invoke({
                 'original_rule': rule.dict(),
                 'document_context': document_context.dict(),
@@ -1117,25 +1910,30 @@ class EnhancedRuleEngine:
             return enhanced_rule
             
         except Exception as e:
+            self._update_tpd_from_error(e)
             enhanced_logger.warning("Rule enhancement failed", error=str(e))
             return rule
     
     def process_document(self, document_path: str) -> RuleExtractionResult:
         """Process a single document and extract rules."""
         
-        # Extract text
-        text = self.ingester.extract_text_from_file(document_path)
         filename = document_path.split('/')[-1]
         
-        # Extract rules (sync wrapper for async method)
         import asyncio
         try:
             loop = asyncio.get_event_loop()
         except RuntimeError:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
-        
-        result = loop.run_until_complete(self.extract_rules_parallel(text, filename))
+            
+        async def _process():
+            from pathlib import Path
+            payload = await self.loader.load(Path(document_path))
+            text = payload.text
+            res = await self.extract_rules_parallel(text, filename)
+            return res, text
+
+        result, text = loop.run_until_complete(_process())
         
         # Add to vector database if available
         if self.vector_manager and result.rules:
@@ -1168,9 +1966,17 @@ class EnhancedRuleEngine:
                 rule_text = row['rule_text']
                 expected_label = row['classification_label']
                 
-                # Extract rule using our engine
-                result = self.extract_rules_parallel(rule_text, f"hcl_sample_{idx}")
-                
+                # Extract rule using our engine (sync wrapper around async)
+                try:
+                    loop = asyncio.get_event_loop()
+                except RuntimeError:
+                    loop = asyncio.new_event_loop()
+                    asyncio.set_event_loop(loop)
+
+                result = loop.run_until_complete(
+                    self.extract_rules_parallel(rule_text, f"hcl_sample_{idx}")
+                )
+
                 if result.rules:
                     # Use the highest confidence rule for comparison
                     best_rule = max(result.rules, key=lambda x: x.confidence_score)
@@ -1267,9 +2073,13 @@ class EnhancedRuleEngine:
         serialized_rules = [rule.dict() for rule in result.rules]
         avg_confidence = result.extraction_stats.get('avg_confidence', 0.0)
 
+        status = result.extraction_stats.get('status')
+        if not status:
+            status = 'success' if serialized_rules else result.extraction_stats.get('status', 'no_rules')
+
         payload = {
             'filename': result.document_metadata.get('filename', fallback_filename) if isinstance(result.document_metadata, dict) else fallback_filename,
-            'status': 'success' if serialized_rules else result.extraction_stats.get('status', 'no_rules'),
+            'status': status,
             'rules': serialized_rules,
             'rule_count': len(serialized_rules),
             'avg_confidence': avg_confidence,

@@ -16,7 +16,7 @@ import json
 # Vector and embedding libraries
 from qdrant_client import QdrantClient
 from qdrant_client.models import Distance, VectorParams, PointStruct, Filter, FieldCondition, Range
-from sentence_transformers import SentenceTransformer
+from sentence_transformers import SentenceTransformer, CrossEncoder
 import tiktoken
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.feature_extraction.text import TfidfVectorizer
@@ -181,12 +181,15 @@ class TextRankKeywordExtractor:
         
         return graph
 
+from pydantic_settings import BaseSettings
+
 @dataclass
-class EmbeddingConfig:
+class EmbeddingConfig(BaseSettings):
     """Configuration for production embedding system."""
     
     # Model configuration
     embedding_model: str = "BAAI/bge-large-en-v1.5"  # Best for manufacturing/technical content
+    reranker_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2" # Fast and effective reranker
     model_max_length: int = 512
     batch_size: int = 32
     
@@ -217,6 +220,10 @@ class EmbeddingConfig:
     enable_caching: bool = True
     cache_size: int = 1000
     batch_processing: bool = True
+
+    class Config:
+        env_file = ".env"
+        extra = "ignore"
     
 class ManufacturingEmbeddingModel:
     """Enhanced embedding model with manufacturing domain optimization."""
@@ -466,6 +473,33 @@ class ManufacturingEmbeddingModel:
         
         return boosted_embeddings
 
+class Reranker:
+    """Cross-encoder based reranker for high-precision retrieval."""
+    
+    def __init__(self, model_name: str):
+        try:
+            self.model = CrossEncoder(model_name)
+            enhanced_logger.info("Reranker initialized", model=model_name)
+        except Exception as e:
+            enhanced_logger.warning("Failed to initialize reranker", error=str(e))
+            self.model = None
+
+    def rerank(self, query: str, docs: List[str], top_k: int = 5) -> List[Tuple[int, float]]:
+        """Rerank documents based on query relevance."""
+        if not self.model or not docs:
+            return [(i, 1.0) for i in range(min(len(docs), top_k))]
+            
+        pairs = [[query, doc] for doc in docs]
+        scores = self.model.predict(pairs)
+        
+        # Create (index, score) tuples
+        results = list(enumerate(scores))
+        
+        # Sort by score descending
+        results.sort(key=lambda x: x[1], reverse=True)
+        
+        return results[:top_k]
+
 class EnhancedVectorManager:
     """Production-ready vector manager with advanced retrieval strategies."""
     
@@ -474,6 +508,12 @@ class EnhancedVectorManager:
         
         # Initialize embedding model
         self.embedding_model = ManufacturingEmbeddingModel(config)
+        
+        # Initialize Reranker
+        if config.enable_reranking:
+            self.reranker = Reranker(config.reranker_model)
+        else:
+            self.reranker = None
         
         # Initialize Qdrant client with explicit configuration
         self.client = QdrantClient(
@@ -604,12 +644,37 @@ class EnhancedVectorManager:
     def similarity_search(self, query: str, top_k: int = 5, 
                          score_threshold: float = 0.0,
                          filter_conditions: Optional[Dict] = None) -> List[Dict[str, Any]]:
-        """Enhanced similarity search with hybrid retrieval."""
+        """Enhanced similarity search with hybrid retrieval and reranking."""
+        
+        # 1. Retrieval (Hybrid or Semantic)
+        # Fetch more candidates for reranking
+        fetch_k = top_k * 4 if self.config.enable_reranking else top_k
         
         if self.config.enable_hybrid_search and len(self.text_corpus) > 10:
-            return self._hybrid_search(query, top_k, score_threshold, filter_conditions)
+            results = self._hybrid_search(query, fetch_k, score_threshold, filter_conditions)
         else:
-            return self._semantic_search(query, top_k, score_threshold, filter_conditions)
+            results = self._semantic_search(query, fetch_k, score_threshold, filter_conditions)
+            
+        # 2. Reranking
+        if self.config.enable_reranking and self.reranker and results:
+            docs = [r['text'] for r in results]
+            reranked_indices = self.reranker.rerank(query, docs, top_k=top_k)
+            
+            final_results = []
+            for idx, score in reranked_indices:
+                if idx < len(results):
+                    res = results[idx]
+                    res['rerank_score'] = float(score)
+                    # Update similarity score to reflect reranker confidence
+                    res['similarity_score'] = float(score) 
+                    final_results.append(res)
+            
+            enhanced_logger.info("Reranking completed", 
+                               original_count=len(results), 
+                               final_count=len(final_results))
+            return final_results
+        
+        return results[:top_k]
     
     def _semantic_search(self, query: str, top_k: int, score_threshold: float,
                         filter_conditions: Optional[Dict] = None) -> List[Dict[str, Any]]:
@@ -636,7 +701,7 @@ class EnhancedVectorManager:
             search_results = self.client.search(
                 collection_name=self.config.collection_name,
                 query_vector=query_embedding.tolist(),
-                limit=top_k * 2,  # Get more results for filtering
+                limit=top_k,
                 score_threshold=score_threshold,
                 query_filter=query_filter,
                 with_payload=True
@@ -644,7 +709,7 @@ class EnhancedVectorManager:
             
             # Process results
             results = []
-            for result in search_results[:top_k]:
+            for result in search_results:
                 results.append({
                     'text': result.payload['text'],
                     'similarity_score': result.score,
@@ -665,12 +730,13 @@ class EnhancedVectorManager:
     
     def _hybrid_search(self, query: str, top_k: int, score_threshold: float,
                       filter_conditions: Optional[Dict] = None) -> List[Dict[str, Any]]:
-        """Hybrid search combining semantic and keyword matching."""
+        """Hybrid search using Reciprocal Rank Fusion (RRF)."""
         
         # Get semantic results
-        semantic_results = self._semantic_search(query, top_k * 2, score_threshold, filter_conditions)
+        semantic_results = self._semantic_search(query, top_k, score_threshold, filter_conditions)
         
         # Get keyword-based results using TF-IDF
+        keyword_results = []
         try:
             # Fit TF-IDF if not already fitted
             if not hasattr(self.tfidf_vectorizer, 'vocabulary_'):
@@ -686,54 +752,56 @@ class EnhancedVectorManager:
             # Get top TF-IDF results
             top_tfidf_indices = np.argsort(tfidf_similarities)[::-1][:top_k]
             
-            # Combine and rerank results
-            combined_results = []
-            
-            # Add semantic results with boosted scores
-            for result in semantic_results:
-                result['semantic_score'] = result['similarity_score']
-                result['tfidf_score'] = 0.0
-                result['hybrid_score'] = result['similarity_score'] * 0.7  # 70% semantic
-                combined_results.append(result)
-            
-            # Add TF-IDF results
             for idx in top_tfidf_indices:
                 if idx < len(self.text_corpus):
                     text = self.text_corpus[idx]
-                    tfidf_score = tfidf_similarities[idx]
-                    
-                    # Check if already in semantic results
-                    existing = next((r for r in combined_results if r['text'] == text), None)
-                    if existing:
-                        # Update hybrid score
-                        existing['tfidf_score'] = tfidf_score
-                        existing['hybrid_score'] = existing['semantic_score'] * 0.7 + tfidf_score * 0.3
-                    else:
-                        # Add new result
-                        combined_results.append({
+                    score = float(tfidf_similarities[idx])
+                    if score > 0.1: # Min threshold
+                        keyword_results.append({
                             'text': text,
-                            'similarity_score': tfidf_score,
-                            'semantic_score': 0.0,
-                            'tfidf_score': tfidf_score,
-                            'hybrid_score': tfidf_score * 0.3,
-                            'metadata': {'source': 'tfidf_only'},
-                            'id': f"tfidf_{idx}"
+                            'similarity_score': score,
+                            'id': f"tfidf_{idx}",
+                            'metadata': {'source': 'tfidf_keyword'}
                         })
             
-            # Sort by hybrid score and return top results
-            combined_results.sort(key=lambda x: x['hybrid_score'], reverse=True)
-            final_results = combined_results[:top_k]
-            
-            enhanced_logger.info("Hybrid search completed",
-                               semantic_count=len(semantic_results),
-                               combined_count=len(combined_results),
-                               final_count=len(final_results))
-            
-            return final_results
-            
         except Exception as e:
-            enhanced_logger.warning("Hybrid search failed, falling back to semantic", error=str(e))
-            return semantic_results[:top_k]
+            enhanced_logger.warning("Hybrid search (TF-IDF) failed", error=str(e))
+            
+        # Apply Reciprocal Rank Fusion (RRF)
+        # RRF score = 1 / (k + rank)
+        k = 60
+        scores = defaultdict(float)
+        doc_map = {}
+        
+        # Process semantic results
+        for rank, res in enumerate(semantic_results):
+            # Use text as key if ID not stable across systems, but here we have IDs
+            doc_key = res['text'] # Use text to dedup between semantic and keyword
+            scores[doc_key] += 1 / (k + rank + 1)
+            doc_map[doc_key] = res
+            
+        # Process keyword results
+        for rank, res in enumerate(keyword_results):
+            doc_key = res['text']
+            scores[doc_key] += 1 / (k + rank + 1)
+            if doc_key not in doc_map:
+                doc_map[doc_key] = res
+        
+        # Sort by RRF score
+        sorted_docs = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+        
+        final_results = []
+        for doc_key, score in sorted_docs[:top_k]:
+            res = doc_map[doc_key]
+            res['rrf_score'] = score
+            final_results.append(res)
+            
+        enhanced_logger.info("Hybrid search (RRF) completed",
+                           semantic_count=len(semantic_results),
+                           keyword_count=len(keyword_results),
+                           final_count=len(final_results))
+            
+        return final_results
     
     def search_with_context(self, query: str, top_k: int = 5) -> List[Dict[str, Any]]:
         """Search with expanded context window for better results."""
