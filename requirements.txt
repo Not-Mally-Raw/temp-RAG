@@ -1,6 +1,6 @@
 # Core Dependencies - Production Pinned Versions
 langchain==0.2.12
-langchain-groq==0.1.6
+langchain-groq==1.1.1
 langchain-community==0.2.9
 langchain-core==0.2.27
 # Vector Database & Embeddings
