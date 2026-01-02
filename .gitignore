@@ -26,3 +26,8 @@ Thumbs.db
 *.log
 logs/
 .cache/
+
+# Local outputs and generated data (do not commit)
+output/
+data/
+*.pid
