@@ -5,7 +5,7 @@ langchain-community==0.2.9
 langchain-core==0.2.27
 # Vector Database & Embeddings
 qdrant-client==1.15.1  # Latest release with Python 3.12+ support
-sentence-transformers==3.0.1
+sentence-transformers==5.2.0
 PyMuPDF==1.24.7  # Stable, with Python 3.13 wheels on macOS
 python-docx==0.8.11
 tiktoken==0.7.0
