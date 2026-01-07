@@ -27,16 +27,21 @@ if str(REPO_ROOT) not in sys.path:
 
 from core.enhanced_rule_engine import EnhancedConfig
 from core.production_system import ProductionRuleExtractionSystem
-from core.rule_extraction import RuleExtractionSettings
+from core.rule_extraction import RuleExtractionPipeline, RuleExtractionSettings
 
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Run rule extraction on a single document")
-    parser.add_argument("--pdf", required=True, help="Path to the input PDF")
+    parser.add_argument("--pdf", required=True, help="Path to the input document (PDF/TXT/DOCX/etc)")
     parser.add_argument(
         "--recall",
         action="store_true",
         help="Enable high-recall settings (bulk extraction, relaxed filters)",
+    )
+    parser.add_argument(
+        "--fast",
+        action="store_true",
+        help="Run only the fast pipeline (core.rule_extraction.RuleExtractionPipeline)",
     )
     parser.add_argument(
         "--max-rules",
@@ -72,6 +77,7 @@ async def run(
     pdf_path: str,
     *,
     recall: bool,
+    fast: bool,
     max_rules: int,
     max_chunks: int,
     out_path: str,
@@ -87,9 +93,9 @@ async def run(
             "Missing GROQ_API_KEY. Add it to your environment or place it in rework-RAG-for-HCLTech/.env"
         )
 
-    pdf = Path(pdf_path).expanduser().resolve()
-    if not pdf.exists():
-        raise SystemExit(f"PDF not found: {pdf}")
+    doc_path = Path(pdf_path).expanduser().resolve()
+    if not doc_path.exists():
+        raise SystemExit(f"Input document not found: {doc_path}")
 
     model = os.getenv("GROQ_MODEL", "meta-llama/llama-4-scout-17b-16e-instruct")
 
@@ -122,16 +128,26 @@ async def run(
         chunk_cache_dir=str(cache_dir),
     )
 
-    system = ProductionRuleExtractionSystem(
-        groq_api_key=groq_key,
-        use_qdrant=False,
-        pipeline_settings=pipeline_settings,
-        enable_enhanced=True,
-        enhanced_config=enhanced_config,
-    )
+    if fast:
+        pipeline = RuleExtractionPipeline(settings=pipeline_settings)
+        print(f"Processing (fast): {doc_path}")
+        summary = await pipeline.process_document(str(doc_path), max_rules=max_rules)
+        result = summary.to_dict()
+    else:
+        system = ProductionRuleExtractionSystem(
+            groq_api_key=groq_key,
+            use_qdrant=False,
+            pipeline_settings=pipeline_settings,
+            enable_enhanced=True,
+            enhanced_config=enhanced_config,
+        )
 
-    print(f"Processing: {pdf}")
-    result = await system.process_document_advanced(str(pdf), enable_enhancement=True, enable_validation=False)
+        print(f"Processing (enhanced): {doc_path}")
+        result = await system.process_document_advanced(
+            str(doc_path),
+            enable_enhancement=True,
+            enable_validation=False,
+        )
 
     rules = result.get("rules", []) or []
     print("Status:", result.get("status"))
@@ -168,6 +184,7 @@ def main() -> None:
         run(
             args.pdf,
             recall=args.recall,
+            fast=args.fast,
             max_rules=args.max_rules,
             max_chunks=args.max_chunks,
             out_path=args.out,

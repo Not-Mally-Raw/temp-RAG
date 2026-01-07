@@ -12,7 +12,7 @@ import pytest
 from pathlib import Path
 import pandas as pd
 import numpy as np
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Iterable
 
 # Add parent directory to path for imports
 sys.path.append(str(Path(__file__).parent.parent))
@@ -20,6 +20,9 @@ sys.path.append(str(Path(__file__).parent.parent))
 from core.production_system import ProductionRuleExtractionSystem
 from core.enhanced_rule_engine import ManufacturingRule, EnhancedConfig
 from core.document_processor import DocumentProcessor
+from core.interfaces import DocumentMeta, Rule, ITextLoader, IChunker, IRuleExtractor, IExporter
+from core.adapters import TextLoaderAdapter, ChunkerAdapter, RuleExtractorAdapter, ExporterAdapter
+from core.orchestrator import ProductionRuleExtractionSystem as OrchestratedSystem
 import structlog
 
 # Configure logging
@@ -39,6 +42,7 @@ logger = structlog.get_logger()
 @pytest.fixture
 def groq_api_key():
     """Get Groq API key from environment."""
+
     api_key = os.getenv("GROQ_API_KEY")
     if not api_key:
         pytest.skip("GROQ_API_KEY not set")
@@ -84,7 +88,7 @@ class TestDocumentProcessing:
     @pytest.mark.asyncio
     async def test_pdf_processing(self, document_processor):
         """Test PDF processing with available files."""
-        data_folder = "/opt/anaconda3/RAG-System/data/real_documents"
+        data_folder = "/opt/anaconda3/rework-RAG-for-HCLTech/data"
 
         if not os.path.exists(data_folder):
             pytest.skip("Data folder not found")
@@ -106,7 +110,7 @@ class TestDocumentProcessing:
     @pytest.mark.asyncio
     async def test_excel_processing(self, document_processor):
         """Test Excel processing."""
-        data_folder = "/opt/anaconda3/RAG-System/data/real_documents"
+        data_folder = "/opt/anaconda3/rework-RAG-for-HCLTech/data"
 
         if not os.path.exists(data_folder):
             pytest.skip("Data folder not found")
@@ -208,12 +212,12 @@ class TestEndToEnd:
     @pytest.mark.asyncio
     async def test_full_pipeline(self, production_system, document_processor):
         """Test complete document processing pipeline."""
-        data_folder = "/opt/anaconda3/RAG-System/data/real_documents"
+        data_folder = "/opt/anaconda3/rework-RAG-for-HCLTech/data"
 
         if not os.path.exists(data_folder):
             pytest.skip("Data folder not found")
 
-        files = list(Path(data_folder).glob("*"))
+        files = [path for path in Path(data_folder).rglob("*") if path.is_file()]
         if not files:
             pytest.skip("No files found")
 
@@ -341,7 +345,7 @@ def test_system_with_direct_fakes():
     chunker = FakeChunker()
     extractor = FakeExtractor()
     exporter = CapturingExporter()
-    system = ProductionRuleExtractionSystem(loader=loader, chunker=chunker, extractor=extractor, exporter=exporter)
+    system = OrchestratedSystem(loader=loader, chunker=chunker, extractor=extractor, exporter=exporter)
 
     rules = system.process_document("doc1", export_path="out.csv")
     assert len(rules) == 2
@@ -357,7 +361,7 @@ def test_system_with_adapters_wrapping_callables():
     exporter_adapter = ExporterAdapter(impl=CapturingExporter().export)
 
     # When passing adapters, behavior should match direct fake objects (substitutability)
-    system_with_adapters = ProductionRuleExtractionSystem(
+    system_with_adapters = OrchestratedSystem(
         loader=loader_adapter, chunker=chunker_adapter, extractor=extractor_adapter, exporter=exporter_adapter
     )
     rules_from_adapters = system_with_adapters.process_document("doc1", export_path="out.csv")
@@ -370,7 +374,7 @@ async def run_document_processing_standalone():
     print("🔧 Testing Document Processing...")
 
     processor = DocumentProcessor()
-    data_folder = "/opt/anaconda3/RAG-System/data/real_documents"
+    data_folder = "/opt/anaconda3/rework-RAG-for-HCLTech/data"
 
     if not os.path.exists(data_folder):
         print("❌ Data folder not found")
@@ -415,7 +419,7 @@ async def run_end_to_end_standalone(groq_api_key):
     system = ProductionRuleExtractionSystem(groq_api_key=groq_api_key, use_qdrant=False)
     processor = DocumentProcessor()
 
-    data_folder = "/opt/anaconda3/RAG-System/data/real_documents"
+    data_folder = "/opt/anaconda3/rework-RAG-for-HCLTech/data"
     if not os.path.exists(data_folder):
         print("❌ Data folder not found")
         return

@@ -10,7 +10,7 @@ import logging
 import os
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Union
+from typing import TYPE_CHECKING, Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from .rule_extraction import (
     ExtractionSummary,
@@ -33,8 +33,9 @@ logger = logging.getLogger(__name__)
 class _PipelineRuleEngineFacade:
     """Async-friendly adapter exposing pipeline operations like the legacy engine."""
 
-    def __init__(self, pipeline: RuleExtractionPipeline) -> None:
+    def __init__(self, pipeline: RuleExtractionPipeline, validator=None) -> None:
         self._pipeline = pipeline
+        self._validator = validator
 
     @property
     def settings(self) -> RuleExtractionSettings:
@@ -52,7 +53,10 @@ class _PipelineRuleEngineFacade:
             document_name,
             max_rules=max_rules,
         )
-        return summary.to_dict()
+        payload = summary.to_dict()
+        if self._validator:
+            payload = self._validator(payload)
+        return payload
 
     async def process_document(
         self,
@@ -64,7 +68,10 @@ class _PipelineRuleEngineFacade:
             document_path,
             max_rules=max_rules,
         )
-        return summary.to_dict()
+        payload = summary.to_dict()
+        if self._validator:
+            payload = self._validator(payload)
+        return payload
 
     async def batch_process(
         self,
@@ -78,7 +85,10 @@ class _PipelineRuleEngineFacade:
             max_rules=max_rules,
             concurrency=concurrency,
         )
-        return [summary.to_dict() for summary in summaries]
+        results = [summary.to_dict() for summary in summaries]
+        if self._validator:
+            results = [self._validator(payload) for payload in results]
+        return results
 
 
 class ProductionRuleExtractionSystem:
@@ -114,8 +124,10 @@ class ProductionRuleExtractionSystem:
         self.max_rules = self.settings.max_rules_total
         self.use_qdrant = use_qdrant
 
+        self._validator = self._apply_validation
+
         # Legacy compatibility surfaces
-        self.rule_engine = _PipelineRuleEngineFacade(self.pipeline)
+        self.rule_engine = _PipelineRuleEngineFacade(self.pipeline, validator=self._validator)
         self.prompt_system = self.pipeline.processor.prompts
         self.llm = self.pipeline.processor._client
 
@@ -144,6 +156,7 @@ class ProductionRuleExtractionSystem:
         if enable_enhancement and self.enhanced_engine is not None:
             payload = await self._run_enhanced_path(document_path)
             payload.setdefault("document_context", {"mode": "enhanced"})
+            payload = self._apply_validation(payload)
             return payload
 
         if enable_enhancement and self.enhanced_engine is None:
@@ -158,8 +171,7 @@ class ProductionRuleExtractionSystem:
         )
         payload = summary.to_dict()
         payload.setdefault("document_context", {"mode": "fast"})
-        if enable_validation:
-            payload.setdefault("validation", {"status": "not_configured"})
+        payload = self._apply_validation(payload)
         return payload
 
     async def batch_process_documents(
@@ -173,7 +185,8 @@ class ProductionRuleExtractionSystem:
             max_rules=self.max_rules,
             concurrency=concurrency,
         )
-        return [summary.to_dict() for summary in summaries]
+        results = [summary.to_dict() for summary in summaries]
+        return [self._apply_validation(payload) for payload in results]
 
     async def extract_rules_from_text(
         self,
@@ -202,7 +215,7 @@ class ProductionRuleExtractionSystem:
     ) -> str:
         """Export rule extraction results to JSON, CSV, or Excel."""
 
-        documents = [self._normalise_result(entry) for entry in results]
+        documents = [self._apply_validation(self._normalise_result(entry)) for entry in results]
         if not documents:
             raise ValueError("No results provided for export")
 
@@ -324,6 +337,90 @@ class ProductionRuleExtractionSystem:
         payload.setdefault("status", "success" if payload["rules"] else payload.get("status", "no_rules"))
         return payload
 
+    def _apply_validation(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Single-source semantic validation for extracted rules."""
+
+        rules = payload.get("rules") or []
+        validated: List[Dict[str, Any]] = []
+        stats = {
+            "total_rules": len(rules),
+            "advisory_rules": 0,
+            "enforceable_rules": 0,
+            "incomplete_rules": 0,
+            "unresolved_compound_constraints": 0,
+        }
+
+        for rule in rules:
+            updated, flags = self._validate_rule(rule)
+            validated.append(updated)
+            if updated.get("validation_state") == "ADVISORY_ONLY":
+                stats["advisory_rules"] += 1
+            if updated.get("validation_state") == "ENFORCEABLE":
+                stats["enforceable_rules"] += 1
+            if updated.get("validation_state") == "INCOMPLETE":
+                stats["incomplete_rules"] += 1
+            if flags.get("has_unresolved_compound_constraint"):
+                stats["unresolved_compound_constraints"] += 1
+
+        payload = dict(payload)
+        payload["rules"] = validated
+        payload["rule_count"] = len(validated)
+        payload["validation"] = {
+            "status": "semantic_validation_applied",
+            **stats,
+        }
+        return payload
+
+    def _validate_rule(self, rule: Dict[str, Any]) -> Tuple[Dict[str, Any], Dict[str, bool]]:
+        constraints = rule.get("constraints")
+        if constraints is None:
+            constraints_list: List[Any] = []
+        else:
+            constraints_list = constraints if isinstance(constraints, list) else [constraints]
+        severity = (
+            str(rule.get("severity") or rule.get("rule_severity") or rule.get("suggested_severity") or "")
+        ).upper()
+        severity = severity or "ADVISORY"
+
+        # Determine presence of constraints, accounting for string expressions
+        if isinstance(constraints, str):
+            has_constraints = bool(constraints.strip())
+            has_unresolved_compound = False
+        else:
+            has_constraints = bool(constraints_list)
+            has_unresolved_compound = any(self._has_unresolved_compound(constraint) for constraint in constraints_list)
+
+        if severity == "ADVISORY":
+            validation_state = "ADVISORY_ONLY"
+        elif severity == "ENFORCEABLE":
+            validation_state = "ENFORCEABLE" if has_constraints and not has_unresolved_compound else "INCOMPLETE"
+        else:
+            validation_state = "ADVISORY_ONLY"
+            severity = "ADVISORY"
+
+        updated = dict(rule)
+        updated["severity"] = severity
+        updated.setdefault("suggested_severity", severity)
+        updated["validation_state"] = validation_state
+        updated["has_constraints"] = has_constraints
+
+        return updated, {"has_unresolved_compound_constraint": has_unresolved_compound}
+
+    def _has_unresolved_compound(self, constraint: Any) -> bool:
+        """Detect compound constraints that were not resolved into concrete subconditions."""
+
+        if isinstance(constraint, dict):
+            for key in ("all_of", "any_of", "conditions", "allOf", "anyOf"):
+                if key in constraint:
+                    nested = constraint.get(key) or []
+                    if not nested:
+                        return True
+                    return any(self._has_unresolved_compound(item) for item in nested)
+            return False
+        if isinstance(constraint, list):
+            return any(self._has_unresolved_compound(item) for item in constraint)
+        return False
+
     def _build_summary(self, documents: List[Dict[str, Any]]) -> Dict[str, Any]:
         total_rules = sum(len(doc.get("rules", [])) for doc in documents)
         successful = sum(1 for doc in documents if doc.get("status") == "success")
@@ -376,22 +473,21 @@ class ProductionRuleExtractionSystem:
         return rows
 
     def _flatten_rules_dfm_strict(self, documents: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Flatten extraction results into a strict, DFM-focused tabular schema.
+        """Flatten extraction results into a minimalist Level-1 DFM schema.
 
-        This intentionally avoids dumping every raw field. It provides a minimal
-        set of columns geared toward downstream DFM triage and governance.
+        Purpose: produce table-ready rows focused on Level-1 extraction only.
+        Drops early-governance columns and keeps only fields needed for review.
 
-        Columns:
-          - rule_id: stable hash of normalized rule text (+ document)
-          - rule_text: rule sentence
-          - domain: where it applies (best-effort)
-          - rule_type: dimensional/material/process/general (when available)
-          - complexity: 0..1 (when available)
-          - priority: high/medium/low (importance to follow)
-          - risk: high/medium/low (impact if violated)
-          - confidence: 0..1
-          - source_document
-          - extraction_method
+        Kept columns:
+          - rule_text
+          - domain (best-effort)
+          - rule_type
+          - constraints (readable)
+          - applicability_text (process/material/feature/location)
+          - severity (ADVISORY|ENFORCEABLE)
+          - confidence (0..1)
+
+        Dropped columns: rule_id, extraction_method, source_document, risk, complexity.
         """
 
         def _norm_text(text: str) -> str:
@@ -448,46 +544,103 @@ class ProductionRuleExtractionSystem:
                 return "medium"
             return "low"
 
+        def _format_constraints(rule: Dict[str, Any]) -> str:
+            constraints = rule.get("constraints")
+            # If the new prompt produced a single string expression
+            if isinstance(constraints, str):
+                return constraints.strip()
+            if not isinstance(constraints, list) or not constraints:
+                return ""
+            rendered: List[str] = []
+            for c in constraints:
+                if not isinstance(c, dict):
+                    continue
+                param = str(c.get("parameter") or c.get("target") or c.get("subject") or "").strip()
+                op = str(c.get("operator") or c.get("constraint_type") or c.get("op") or "").strip()
+                value = c.get("value")
+                expr = c.get("expression")
+                units = str(c.get("units") or c.get("unit") or "").strip()
+                rhs = ""
+                if isinstance(expr, str) and expr.strip():
+                    rhs = expr.strip()
+                elif isinstance(value, (int, float)):
+                    rhs = str(value)
+                elif isinstance(value, str):
+                    rhs = value.strip()
+                elif value is not None:
+                    try:
+                        rhs = json.dumps(value, ensure_ascii=False)
+                    except Exception:
+                        rhs = str(value)
+                piece = ""
+                if param and op and rhs:
+                    piece = f"{param} {op} {rhs}"
+                elif param and rhs:
+                    piece = f"{param}: {rhs}"
+                elif rhs:
+                    piece = rhs
+                if piece and units:
+                    piece = f"{piece} {units}"
+                if piece:
+                    rendered.append(piece)
+            # compound_logic hint
+            compound = rule.get("compound_logic")
+            if isinstance(compound, list) and compound:
+                for node in compound:
+                    if not isinstance(node, dict):
+                        continue
+                    fn = str(node.get("function") or "").strip()
+                    operands = node.get("operands")
+                    if fn and isinstance(operands, list) and operands:
+                        op_str = ", ".join(str(o) for o in operands if str(o).strip())
+                        if op_str:
+                            rendered.append(f"{fn}({op_str})")
+            return "; ".join(rendered)
+
+        def _format_applicability(rule: Dict[str, Any]) -> str:
+            app = rule.get("applicability_structured")
+            if not isinstance(app, dict):
+                app_list = rule.get("applicability")
+                if isinstance(app_list, list) and app_list and isinstance(app_list[0], dict):
+                    app = app_list[0]
+            if not isinstance(app, dict):
+                app = {}
+            parts: List[str] = []
+            for key in ("process", "material", "feature", "location", "geometry"):
+                val = app.get(key)
+                if val is None:
+                    continue
+                s = str(val).strip()
+                if not s or s.lower() in {"unknown", "null"}:
+                    continue
+                parts.append(f"{key}={s}")
+            return "; ".join(parts)
+
         rows: List[Dict[str, Any]] = []
         for doc in documents:
             rules = doc.get("rules") or []
             if not rules:
                 continue
-
-            source_document = doc.get("filename") or doc.get("document_name") or "unknown"
             for rule in rules:
                 rule_text = (rule.get("rule_text") or "").strip()
                 if not rule_text:
                     continue
 
-                normalized = _norm_text(rule_text)
-                stable_basis = f"{source_document}::{normalized}".encode("utf-8")
-                rule_id = hashlib.sha1(stable_basis).hexdigest()
-
-                confidence = rule.get("confidence_score")
+                confidence = rule.get("confidence_score", rule.get("confidence"))
                 try:
                     confidence_val = float(confidence) if confidence is not None else 0.0
                 except Exception:
                     confidence_val = 0.0
 
-                complexity = rule.get("complexity_score")
-                try:
-                    complexity_val = float(complexity) if complexity is not None else 0.0
-                except Exception:
-                    complexity_val = 0.0
-
                 rows.append(
                     {
-                        "rule_id": rule_id,
                         "rule_text": rule_text,
                         "domain": _pick_domain(doc, rule),
                         "rule_type": (rule.get("rule_type") or "").strip() or "general",
-                        "complexity": round(max(0.0, min(1.0, complexity_val)), 4),
-                        "priority": _priority_from_text(rule_text),
-                        "risk": _risk_from_text(rule_text),
+                        "constraints": _format_constraints(rule),
+                        "applicability_text": _format_applicability(rule),
+                        "severity": (str(rule.get("severity") or "").strip() or "ADVISORY").upper(),
                         "confidence": round(max(0.0, min(1.0, confidence_val)), 4),
-                        "source_document": source_document,
-                        "extraction_method": (rule.get("extraction_method") or "").strip(),
                     }
                 )
 

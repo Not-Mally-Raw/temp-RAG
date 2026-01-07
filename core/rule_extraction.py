@@ -434,6 +434,22 @@ class ChunkProcessor:
                             "rationale": "Baseline mock rule",
                             "primary_feature": "calibration",
                             "supporting_quote": snippet,
+                            "supporting_quotes": [snippet],
+                            "intent": "Calibration readiness",
+                            "scope_domain": {"process": "Assembly", "item": "Equipment", "feature": None},
+                            "applicability": [],
+                            "constraints": [
+                                {
+                                    "subject": "calibration_status",
+                                    "operator": "==",
+                                    "value": "calibrated",
+                                    "unit": None,
+                                    "logic": "qualitative",
+                                    "provenance_quote": snippet,
+                                }
+                            ],
+                            "severity": "ENFORCEABLE",
+                            "validation_state": "ENFORCEABLE",
                         },
                         {
                             "rule_text": "Ensure safety guards engaged",
@@ -444,6 +460,22 @@ class ChunkProcessor:
                             "rationale": "Baseline mock rule",
                             "primary_feature": "safety",
                             "supporting_quote": snippet,
+                            "supporting_quotes": [snippet],
+                            "intent": "Safety guarding",
+                            "scope_domain": {"process": "General", "item": "Equipment", "feature": "Guard"},
+                            "applicability": [],
+                            "constraints": [
+                                {
+                                    "subject": "safety_guard_state",
+                                    "operator": "==",
+                                    "value": "engaged",
+                                    "unit": None,
+                                    "logic": "qualitative",
+                                    "provenance_quote": snippet,
+                                }
+                            ],
+                            "severity": "ENFORCEABLE",
+                            "validation_state": "ENFORCEABLE",
                         },
                     ],
                 }
@@ -613,7 +645,10 @@ class ChunkProcessor:
         if not isinstance(payload, dict):
             return None
 
+        canonical = str(payload.get("canonical_statement", "")).strip()
         raw_text = str(payload.get("rule_text", "")).strip()
+        if not raw_text and canonical:
+            raw_text = canonical
         if not raw_text:
             return None
 
@@ -635,15 +670,137 @@ class ChunkProcessor:
             confidence = 0.6
         confidence = max(0.0, min(1.0, confidence))
 
+        intent = str(
+            payload.get("intent")
+            or payload.get("rule_intent")
+            or payload.get("ruleIntent")
+            or ""
+        ).strip()
+
+        scope_domain = payload.get("scope_domain") or payload.get("scope") or payload.get("domain")
+        if not isinstance(scope_domain, dict):
+            scope_domain = {"process": None, "item": None, "feature": None}
+        else:
+            scope_domain = {
+                "process": scope_domain.get("process"),
+                "item": scope_domain.get("item"),
+                "feature": scope_domain.get("feature"),
+            }
+
+        # Preserve contract-style domain strings (e.g. "sheet metal / Bend") separately.
+        domain_text = payload.get("domain")
+        if not isinstance(domain_text, str):
+            domain_text = ""
+
+        # Applicability: prefer structured object; fall back to list/conditions.
+        app_struct = payload.get("applicability")
+        applicability: List[Any]
+        if isinstance(app_struct, dict):
+            applicability = [app_struct]
+        else:
+            applicability = (
+                payload.get("applicability")
+                or payload.get("applicability_conditions")
+                or payload.get("conditions")
+                or []
+            )
+            if not isinstance(applicability, list):
+                applicability = []
+
+        # Constraints: Level-1 may emit a string expression or a structured list.
+        constraints_field = payload.get("constraints") or payload.get("requirements")
+        constraints_is_string = isinstance(constraints_field, str)
+        constraints_raw = constraints_field if constraints_is_string else (constraints_field or [])
+        if not constraints_is_string and not isinstance(constraints_raw, list):
+            constraints_raw = []
+
+        primary_constraints = payload.get("primary_constraints") or []
+        harvested_constraints = payload.get("harvested_constraints") or []
+        if not isinstance(primary_constraints, list):
+            primary_constraints = []
+        if not isinstance(harvested_constraints, list):
+            harvested_constraints = []
+
+        merged_constraints: List[Any] = []
+        for item in primary_constraints:
+            if isinstance(item, dict):
+                enriched = dict(item)
+                enriched.setdefault("constraint_source", "primary")
+                merged_constraints.append(enriched)
+        for item in harvested_constraints:
+            if isinstance(item, dict):
+                enriched = dict(item)
+                enriched.setdefault("constraint_source", "harvested")
+                merged_constraints.append(enriched)
+
+        constraints = merged_constraints if merged_constraints else constraints_raw
+
+        # Normalise constraint keys for downstream compatibility
+        if constraints_is_string:
+            # Preserve the expression verbatim for downstream export/validation
+            pass
+        else:
+            normalised_constraints: List[Dict[str, Any]] = []
+            for c in constraints:
+                if not isinstance(c, dict):
+                    continue
+                d = dict(c)
+                if "subject" not in d and isinstance(d.get("parameter"), (str, int, float)):
+                    d["subject"] = d.get("parameter")
+                if "unit" not in d and isinstance(d.get("units"), (str, int, float)):
+                    d["unit"] = d.get("units")
+                if "logic" not in d and d.get("expression") is not None:
+                    d["logic"] = d.get("expression")
+                normalised_constraints.append(d)
+            constraints = normalised_constraints
+
+        raw_severity = str(payload.get("severity") or payload.get("rule_severity") or "").strip().upper()
+        severity = raw_severity if raw_severity in {"ENFORCEABLE", "ADVISORY"} else ""
+
+        has_constraints = bool(constraints) and (constraints.strip() != "" if isinstance(constraints, str) else True)
+        compound_logic = payload.get("compound_logic")
+        if not isinstance(compound_logic, list):
+            compound_logic = []
+
+        suggested_severity = "ENFORCEABLE" if has_constraints else "ADVISORY"
+
+        supporting_quote = str(payload.get("supporting_quote", "")).strip()
+        supporting_quotes = payload.get("supporting_quotes") or payload.get("supportingQuotes")
+        if isinstance(supporting_quotes, list):
+            supporting_quotes_list = [str(item).strip() for item in supporting_quotes if str(item).strip()]
+        else:
+            supporting_quotes_list = []
+        if supporting_quote and supporting_quote not in supporting_quotes_list:
+            supporting_quotes_list.insert(0, supporting_quote)
+
         metadata = {
             "source_document": document_name,
             "chunk_index": chunk_index,
             "chunk_rule_index": rule_index,
+            "canonical_statement": canonical or raw_text,
+            "domain": domain_text.strip() or None,
             "primary_feature": str(payload.get("primary_feature", "")).strip(),
             "unit": str(payload.get("unit", "")).strip(),
             "value": payload.get("value"),
             "tolerance_range": payload.get("tolerance_range"),
-            "supporting_quote": str(payload.get("supporting_quote", "")).strip(),
+            "supporting_quote": supporting_quote,
+            "intent": intent,
+            "scope_domain": scope_domain,
+            "applicability": applicability,
+            "applicability_structured": app_struct if isinstance(app_struct, dict) else None,
+            "constraints": constraints,
+            "has_constraints": has_constraints,
+            "severity": severity or suggested_severity,
+            "suggested_severity": suggested_severity,
+            "compound_logic": compound_logic,
+            "supporting_quotes": supporting_quotes_list,
+            "provenance": {
+                "source_document": document_name,
+                "chunk_index": chunk_index,
+                "chunk_rule_index": rule_index,
+                "supporting_quotes": supporting_quotes_list,
+                "section_title": payload.get("section_title") or payload.get("section") or None,
+            },
         }
 
         rationale = str(payload.get("rationale", "")).strip()
@@ -818,8 +975,77 @@ class RuleExtractionPipeline:
             )
 
     def _dedupe_key(self, rule: Rule) -> str:
-        base = re.sub(r"\s+", " ", rule.rule_text.lower()).strip()
-        return f"{base}|{rule.category.lower()}|{rule.rule_type.lower()}"
+        def _norm_text(value: Any) -> str:
+            return re.sub(r"\s+", " ", str(value or "").strip().lower())
+
+        intent = _norm_text(rule.metadata.get("intent"))
+        scope_domain = rule.metadata.get("scope_domain")
+        if isinstance(scope_domain, dict):
+            scope_sig = "|".join(
+                _norm_text(scope_domain.get(key))
+                for key in ("process", "item", "feature")
+            )
+        else:
+            scope_sig = ""
+
+        applicability = rule.metadata.get("applicability")
+        if isinstance(applicability, list):
+            app_sig = ";".join(
+                _norm_text(
+                    (
+                        item.get("exp_name")
+                        or item.get("gate")
+                        or item.get("name")
+                        or item.get("field")
+                        or item.get("attribute")
+                        or item.get("subject")
+                    )
+                    if isinstance(item, dict)
+                    else item
+                )
+                + ":"
+                + _norm_text(
+                    (item.get("operator") or item.get("op"))
+                    if isinstance(item, dict)
+                    else ""
+                )
+                + ":"
+                + _norm_text(
+                    (
+                        item.get("value")
+                        if isinstance(item, dict)
+                        else ""
+                    )
+                )
+                for item in applicability
+                if item
+            )
+        else:
+            app_sig = ""
+
+        constraints = rule.metadata.get("constraints")
+        if isinstance(constraints, list):
+            con_sig = ";".join(
+                _norm_text(item.get("subject") if isinstance(item, dict) else item)
+                + ":"
+                + _norm_text(item.get("operator") if isinstance(item, dict) else "")
+                + ":"
+                + _norm_text(item.get("value") if isinstance(item, dict) else "")
+                + ":"
+                + _norm_text(item.get("unit") if isinstance(item, dict) else "")
+                + ":"
+                + _norm_text(item.get("logic") if isinstance(item, dict) else "")
+                for item in constraints
+                if item
+            )
+        else:
+            con_sig = ""
+
+        if intent or app_sig or con_sig or scope_sig:
+            return f"{intent}|{scope_sig}|{app_sig}|{con_sig}"
+
+        base = _norm_text(rule.rule_text)
+        return f"{base}|{_norm_text(rule.category)}|{_norm_text(rule.rule_type)}"
 
 
 # ---------------------------------------------------------------------------
