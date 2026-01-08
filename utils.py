@@ -41,7 +41,7 @@ class RuleEngineConfig:
     rag_score_threshold: float = 0.2
 
     # LLM settings
-    groq_model: str = "llama-3.1-8b-instant"
+    groq_model: str = "gpt-oss-20b"
     max_llm_retries: int = 2
 
 

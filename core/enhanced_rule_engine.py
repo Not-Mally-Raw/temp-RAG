@@ -421,7 +421,8 @@ class EnhancedConfig(BaseSettings):
     """Production configuration with validation."""
 
     # LLM Configuration
-    groq_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    # Preferred model: GPT-OSS-20B (fallback managed at runtime to llama-3.1-8b-instant)
+    groq_model: str = "gpt-oss-20b"
     groq_api_key: str = ""
     max_tokens: int = 4096
     temperature: float = 0.05

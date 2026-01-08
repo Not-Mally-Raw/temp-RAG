@@ -61,16 +61,16 @@ class RuleExtractionSettings(BaseSettings):
     groq_api_key: str = Field(default="")
     groq_model: str = Field(default="meta-llama/llama-4-scout-17b-16e-instruct")
     temperature: float = Field(default=0.1)
-    max_output_tokens: int = Field(default=2048)
+    max_output_tokens: int = Field(default=4096)
 
-    max_chunk_tokens: int = Field(default=3200)
-    chunk_overlap_tokens: int = Field(default=200)
-    max_rules_per_chunk: int = Field(default=20)
-    max_rules_total: int = Field(default=150)
+    max_chunk_tokens: int = Field(default=900)
+    chunk_overlap_tokens: int = Field(default=450)
+    max_rules_per_chunk: int = Field(default=60)
+    max_rules_total: int = Field(default=300)
 
     max_concurrent_calls: int = Field(default=4)
     throttle_seconds: float = Field(default=0.0)
-    request_timeout: float = Field(default=60.0)
+    request_timeout: float = Field(default=120.0)
     max_retries: int = Field(default=3)
     retry_backoff_seconds: float = Field(default=2.0)
 
@@ -574,22 +574,23 @@ class ChunkProcessor:
 
     def _parse_response(self, raw: str, document_name: str, chunk_index: int) -> List[Rule]:
         json_blob = self._extract_json(raw)
-        if not json_blob:
-            return []
+        items: Iterable[Any] = []
+        if json_blob:
+            try:
+                payload = json.loads(json_blob)
+                if isinstance(payload, dict) and "rules" in payload:
+                    items = payload["rules"]
+                elif isinstance(payload, list):
+                    items = payload
+                else:
+                    items = []
+            except json.JSONDecodeError:
+                logger.debug("json_decode_failed", extra={"chunk_index": chunk_index})
+                items = []
 
-        try:
-            payload = json.loads(json_blob)
-        except json.JSONDecodeError:
-            logger.debug("json_decode_failed", extra={"chunk_index": chunk_index})
-            return []
-
-        items: Iterable[Any]
-        if isinstance(payload, dict) and "rules" in payload:
-            items = payload["rules"]
-        elif isinstance(payload, list):
-            items = payload
-        else:
-            return []
+        # Fallback: parse the ROLE/DEFINITIONS text format (RULE: ... / CONSTRAINTS: ...)
+        if not items:
+            items = self._parse_text_sections(raw)
 
         clean: List[Rule] = []
         for idx, item in enumerate(items):
@@ -599,6 +600,95 @@ class ChunkProcessor:
             if len(clean) >= self.settings.max_rules_per_chunk:
                 break
         return clean
+
+    def _parse_text_sections(self, raw: str) -> List[Dict[str, Any]]:
+        """Parse plain-text outputs in the "RULE:/CONSTRAINTS:" format.
+
+        Returns a list of minimal payload dicts compatible with _normalise_rule.
+        """
+        text = (raw or "").strip()
+        if not text:
+            return []
+
+        lines = text.splitlines()
+        # Identify indices where a RULE: starts
+        rule_indices: List[int] = [idx for idx, ln in enumerate(lines) if ln.strip().upper().startswith("RULE:")]
+        if not rule_indices:
+            return []
+
+        rule_indices.append(len(lines))  # sentinel for last block
+        results: List[Dict[str, Any]] = []
+
+        for i in range(len(rule_indices) - 1):
+            start = rule_indices[i]
+            end = rule_indices[i + 1]
+            block = lines[start:end]
+            if not block:
+                continue
+
+            # RULE: <text>
+            rule_line = block[0]
+            rule_text = rule_line.split(":", 1)[1].strip() if ":" in rule_line else rule_line.strip()
+            if not rule_text:
+                continue
+
+            # Defaults for applicability
+            app = {"material": "unspecified", "process": "unspecified", "feature": "unspecified", "location": "unspecified"}
+
+            # Find constraints sections
+            dimensional: List[str] = []
+            relational: List[str] = []
+            section: Optional[str] = None
+
+            for ln in block[1:]:
+                s = ln.strip()
+                u = s.upper()
+                if u.startswith("CONSTRAINTS:"):
+                    section = None
+                    continue
+                if u.startswith("- APPLICABILITY:"):
+                    section = "APPLICABILITY"
+                    continue
+                if u.startswith("- DIMENSIONAL:"):
+                    section = "DIMENSIONAL"
+                    continue
+                if u.startswith("- RELATIONAL:"):
+                    section = "RELATIONAL"
+                    continue
+
+                if section == "APPLICABILITY" and s.startswith("-") and ":" in s:
+                    # format: - Key: Value
+                    try:
+                        key, val = s[1:].split(":", 1)
+                        key = key.strip().lower()
+                        val = val.strip()
+                        if key in {"material", "process", "feature", "location"}:
+                            app[key] = val or app.get(key, "unspecified")
+                    except Exception:
+                        continue
+                elif section == "DIMENSIONAL" and s.startswith("-"):
+                    entry = s[1:].strip()
+                    if entry and entry.lower() != "none":
+                        dimensional.append(entry)
+                elif section == "RELATIONAL" and s.startswith("-"):
+                    entry = s[1:].strip()
+                    if entry and entry.lower() != "none":
+                        relational.append(entry)
+
+            parts: List[str] = []
+            if dimensional:
+                parts.append("; ".join(dimensional))
+            if relational:
+                parts.append("; ".join(relational))
+            constraints_str = " | ".join(parts) if parts else None
+
+            payload: Dict[str, Any] = {"rule_text": rule_text}
+            if constraints_str:
+                payload["constraints"] = constraints_str
+            payload["applicability"] = app
+            results.append(payload)
+
+        return results
 
     @staticmethod
     def _render_prompt(chunk_text: str, document_name: str, chunk_index: int) -> str:
@@ -1038,14 +1128,18 @@ class RuleExtractionPipeline:
                 for item in constraints
                 if item
             )
+        elif isinstance(constraints, str):
+            con_sig = _norm_text(constraints)
         else:
             con_sig = ""
 
+        # Include chunk index to avoid over-merging distinct rules across overlapped chunks
+        chunk_idx = rule.metadata.get("chunk_index")
         if intent or app_sig or con_sig or scope_sig:
-            return f"{intent}|{scope_sig}|{app_sig}|{con_sig}"
+            return f"{intent}|{scope_sig}|{app_sig}|{con_sig}|chunk:{chunk_idx}"
 
         base = _norm_text(rule.rule_text)
-        return f"{base}|{_norm_text(rule.category)}|{_norm_text(rule.rule_type)}"
+        return f"{base}|{_norm_text(rule.category)}|{_norm_text(rule.rule_type)}|chunk:{chunk_idx}"
 
 
 # ---------------------------------------------------------------------------

@@ -216,6 +216,12 @@ def main() -> None:
     )
     enable_local_heuristics = st.sidebar.checkbox("Local heuristics fallback", value=True)
 
+    use_fast_pipeline = st.sidebar.checkbox(
+        "Use fast pipeline prompt (no enhancement)",
+        value=True,
+        help="Run the fast extractor that uses core/prompts.py. Uncheck to use enhanced engine.",
+    )
+
     max_display = st.sidebar.slider("Max rows to display", 25, 300, 100, 25)
     export_format = st.sidebar.selectbox("Export", ["CSV", "Excel", "JSON"], index=0)
 
@@ -255,13 +261,24 @@ def main() -> None:
             loop = asyncio.new_event_loop()
             asyncio.set_event_loop(loop)
             try:
-                result = loop.run_until_complete(
-                    system.process_document_advanced(
-                        chosen_path,
-                        enable_enhancement=True,
-                        enable_validation=False,
+                if use_fast_pipeline:
+                    # Fast path only (uses core/prompts.py)
+                    result = loop.run_until_complete(
+                        system.pipeline.process_document(
+                            chosen_path,
+                            max_rules=system.max_rules,
+                        )
                     )
-                )
+                    result = result.to_dict()
+                    result.setdefault("document_context", {"mode": "fast"})
+                else:
+                    result = loop.run_until_complete(
+                        system.process_document_advanced(
+                            chosen_path,
+                            enable_enhancement=True,
+                            enable_validation=False,
+                        )
+                    )
             finally:
                 loop.close()
 
