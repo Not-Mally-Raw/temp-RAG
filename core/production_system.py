@@ -213,57 +213,115 @@ class ProductionRuleExtractionSystem:
         include_metadata: bool = True,
         schema: str = "full",
     ) -> str:
-        """Export rule extraction results to JSON, CSV, or Excel."""
+        """Export rule extraction results - JSON ONLY (CSV/Excel removed)."""
 
         documents = [self._apply_validation(self._normalise_result(entry)) for entry in results]
         if not documents:
             raise ValueError("No results provided for export")
 
         format_normalised = format.lower().strip()
+        
+        # Only support JSON export
+        if format_normalised not in {"json"}:
+            raise ValueError(f"Only JSON format is supported. Requested: {format}")
+
         timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
-        default_name = {
-            "json": f"rule_extraction_{timestamp}.json",
-            "csv": f"rule_extraction_{timestamp}.csv",
-            "tsv": f"rule_extraction_{timestamp}.tsv",
-            "xlsx": f"rule_extraction_{timestamp}.xlsx",
-            "excel": f"rule_extraction_{timestamp}.xlsx",
-        }.get(format_normalised, f"rule_extraction_{timestamp}.{format_normalised}")
+        default_name = f"rule_extraction_{timestamp}.json"
 
         if output_path:
             path = Path(output_path)
         else:
-            path = Path("output") / "exports" / default_name
+            path = Path("output") / default_name
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        if format_normalised == "json":
-            payload = {
-                "summary": self._build_summary(documents),
-                "results": documents,
-            }
-            path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
-        else:
-            schema_norm = (schema or "full").strip().lower()
-            if schema_norm in {"dfm", "dfm_strict", "strict_dfm"}:
-                rows = self._flatten_rules_dfm_strict(documents)
-            else:
-                rows = self._flatten_rules(documents, include_metadata=include_metadata)
-            if format_normalised in {"csv", "tsv"}:
-                delimiter = "," if format_normalised == "csv" else "\t"
-                with path.open("w", newline="", encoding="utf-8") as handle:
-                    fieldnames = sorted({key for row in rows for key in row})
-                    writer = csv.DictWriter(handle, fieldnames=fieldnames, delimiter=delimiter)
-                    writer.writeheader()
-                    writer.writerows(rows)
-            elif format_normalised in {"xlsx", "excel"}:
-                if pd is None:
-                    raise RuntimeError("pandas is required for Excel exports; install pandas to enable this format")
-                df = pd.DataFrame(rows)
-                df.to_excel(path, index=False)  # type: ignore[arg-type]
-            else:  # pragma: no cover - safeguard for unsupported formats
-                raise ValueError(f"Unsupported export format: {format}")
+        # Write JSON directly
+        payload = {
+            "summary": self._build_summary(documents),
+            "results": documents,
+        }
+        path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
 
         logger.info("export_completed", extra={"path": str(path), "format": format_normalised})
         return str(path)
+
+    def consolidate_all_rules(
+        self,
+        output_dir: Union[str, Path] = "output",
+        output_file: Optional[Union[str, Path]] = None,
+    ) -> str:
+        """Consolidate all individual JSON rule files into a single JSON file.
+        
+        Args:
+            output_dir: Directory containing individual JSON files (default: "output")
+            output_file: Path for consolidated file (default: "output/all_rules_consolidated.json")
+            
+        Returns:
+            Path to the consolidated JSON file
+        """
+        output_dir = Path(output_dir)
+        if not output_dir.exists():
+            raise ValueError(f"Output directory does not exist: {output_dir}")
+        
+        # Find all JSON files in output directory
+        json_files = list(output_dir.glob("*.json"))
+        if not json_files:
+            raise ValueError(f"No JSON files found in {output_dir}")
+        
+        # Collect all rules from all files
+        all_documents = []
+        total_rules = 0
+        
+        for json_file in json_files:
+            try:
+                with open(json_file, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    
+                # Extract rules and metadata
+                doc_entry = {
+                    "source_pdf": data.get("source_pdf", json_file.stem),
+                    "rule_count": data.get("rule_count", len(data.get("rules", []))),
+                    "rules": data.get("rules", []),
+                    "processing_time": data.get("processing_time", 0),
+                    "chunks_processed": data.get("chunks_processed", 0),
+                }
+                all_documents.append(doc_entry)
+                total_rules += doc_entry["rule_count"]
+                
+            except Exception as e:
+                logger.warning(f"Failed to read {json_file}: {e}")
+                continue
+        
+        # Create consolidated output
+        timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        consolidated = {
+            "consolidated_at": datetime.utcnow().isoformat(),
+            "total_documents": len(all_documents),
+            "total_rules": total_rules,
+            "documents": all_documents,
+        }
+        
+        # Determine output path
+        if output_file:
+            output_path = Path(output_file)
+        else:
+            output_path = output_dir / f"all_rules_consolidated_{timestamp}.json"
+        
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Write consolidated file
+        with open(output_path, 'w', encoding='utf-8') as f:
+            json.dump(consolidated, f, indent=2, ensure_ascii=False)
+        
+        logger.info(
+            "rules_consolidated",
+            extra={
+                "path": str(output_path),
+                "documents": len(all_documents),
+                "total_rules": total_rules,
+            }
+        )
+        
+        return str(output_path)
 
     def get_system_stats(self) -> Dict[str, Any]:
         settings = self.settings

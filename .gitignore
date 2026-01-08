@@ -10,14 +10,27 @@ __pycache__/
 *.pyd
 *.so
 *.egg-info/
+*.egg
+build/
+dist/
 
 # Virtual environments
 .venv/
 venv/
+env/
+ENV/
 
 # OS artifacts
 .DS_Store
 Thumbs.db
+*.swp
+*.swo
+*~
+
+# IDE artifacts
+.vscode/
+.idea/
+*.sublime-*
 
 # Notebooks checkpoints
 .ipynb_checkpoints/
@@ -26,8 +39,20 @@ Thumbs.db
 *.log
 logs/
 .cache/
+.pytest_cache/
+.coverage
+htmlcov/
 
 # Local outputs and generated data (do not commit)
 output/
 data/
 *.pid
+
+# Temporary files
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Streamlit cache
+.streamlit/

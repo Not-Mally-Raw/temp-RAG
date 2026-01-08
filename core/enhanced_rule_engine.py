@@ -17,11 +17,11 @@ from enum import Enum
 
 # Core LangChain imports
 from langchain_core.prompts import ChatPromptTemplate, SystemMessagePromptTemplate, HumanMessagePromptTemplate
-from langchain_core.output_parsers import PydanticOutputParser, JsonOutputParser
+from langchain_core.output_parsers import JsonOutputParser
 from langchain_core.runnables import RunnablePassthrough, RunnableParallel
 from langchain_groq import ChatGroq
 
-# Pydantic for structured outputs
+# Pydantic for config only
 from pydantic import BaseModel, Field, validator
 from pydantic_settings import BaseSettings
 
@@ -40,6 +40,7 @@ if TYPE_CHECKING:
     from .enhanced_vector_utils import EnhancedVectorManager
 from .rule_extraction import DocumentLoader
 from .chunk_cache import ChunkCache, FileChunkCache
+from .prompts import PromptLibrary
 from utils import logger
 
 # Configure structured logging
@@ -521,6 +522,9 @@ class EnhancedRuleEngine:
         # Initialize tokenizer for token-aware processing
         self.tokenizer = tiktoken.get_encoding("cl100k_base")
         
+        # Load mega-prompt from single source of truth
+        self.prompt_library = PromptLibrary()
+        
         # Initialize LLM with structured output
         self._preferred_model = self.config.groq_model
         self._fallback_model = "llama-3.1-8b-instant"
@@ -545,19 +549,8 @@ class EnhancedRuleEngine:
                     f"Failed to initialize Groq LLM: {self._last_llm_error}. Please check your GROQ_API_KEY."
                 )
         
-        # Setup structured output parsers
-        self.rule_parser = PydanticOutputParser(pydantic_object=ManufacturingRule)
-        self.rule_list_parser = PydanticOutputParser(
-            pydantic_object=ManufacturingRuleList
-        )
-        # Tolerant candidate parser: accepts partial rule objects
-        self.rule_candidate_list_parser = PydanticOutputParser(
-            pydantic_object=ManufacturingRuleCandidateList
-        )
-        # Lightweight bulk/raw parser (list of short rule texts)
-        self.raw_rule_list_parser = PydanticOutputParser(pydantic_object=RawRuleList)
-        self.context_parser = PydanticOutputParser(pydantic_object=DocumentContext)
-        self.result_parser = PydanticOutputParser(pydantic_object=RuleExtractionResult)
+        # Setup JSON output parser (NO PYDANTIC VALIDATION)
+        self.rule_parser = JsonOutputParser()
         
         # Setup LangChain chains
         self._setup_extraction_chains()
@@ -735,161 +728,26 @@ class EnhancedRuleEngine:
         """Public async helper that mirrors the legacy interface."""
 
         result = await self.extract_rules_parallel(text, filename)
-        return self._result_to_dict(result, fallback_filename=filename)
+        # result is already a dict, return as-is
+        return result
 
     def _setup_extraction_chains(self):
-        """Setup LangChain chains for structured extraction."""
+        """Setup LangChain chains using mega-prompt from prompts.py."""
         
-        # Document context analysis chain
-        context_system_prompt = """You are an expert document analyzer specializing in manufacturing and engineering documents. 
-        Analyze the document context and extract comprehensive metadata that will help with accurate rule extraction.
+        # Use mega-prompt from prompts.py as single source of truth
+        # Escape curly braces in the prompt to avoid template variable issues
+        rule_system_prompt = self.prompt_library.compiler_prompt.replace("{", "{{").replace("}", "}}")
         
-        Focus on:
-        1. Industry sector identification (automotive, aerospace, electronics, etc.)
-        2. Technical domain classification
-        3. Document type and purpose
-        4. Manufacturing process types mentioned
-        5. Material specifications
-        6. Quality standards referenced
-        7. Technical complexity assessment
-        
-        Provide detailed analysis in the specified JSON format."""
-        
-        context_human_prompt = """Analyze this document text and provide comprehensive context analysis:
+        rule_human_prompt = """Text Chunk:
+{text_chunk}
 
-        Document Text (first 2000 chars):
-        {document_text}
-
-        {format_instructions}
+Return ONLY the JSON object with format: {{"rules": [...]}}. No markdown, no explanations."""
         
-        Focus on manufacturing relevance and technical content density."""
-        
-        self.context_chain = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(context_system_prompt),
-            HumanMessagePromptTemplate.from_template(context_human_prompt)
-        ]) | self.llm | self.context_parser
-        
-        # Enhanced rule extraction chain with structured output
-        rule_system_prompt = """You are a world-class manufacturing rule extraction expert with 20+ years of experience.
-        Your task is to extract all specific, actionable manufacturing rules from the provided text.
-        
-        CRITICAL SUCCESS CRITERIA:
-        1. Extract ALL manufacturing rules present — specific, partially-specific, and implicit.
-        2. Prioritize dimensional specifications with numeric values and tolerances when present
-        3. Identify implicit requirements even if not explicitly stated
-        4. Assign accurate confidence scores based on specificity and clarity
-        5. Properly categorize by manufacturing domain
-        6. Output numeric fields in normalized format.
-        
-    NUMERIC FIELD FORMATTING RULES:
-    - Provide plain numbers without units for "value" and "tolerance".
-    - If a tolerance or value is a range, return a two-element JSON array of numbers (e.g., [0.003, 0.005]).
-    - Keep units exclusively in the "unit" field.
-    - If numeric values are missing, leave fields empty/null.
-
-        EXTRACTION PRIORITIES (in order):
-        1. Dimensional specifications with numeric values
-        2. Material requirements and properties
-        3. Process parameters and conditions
-        4. Quality control criteria
-        5. Safety requirements
-        6. Assembly guidelines
-        
-        The model MAY return multiple rules for a single text chunk when
-        several distinct, actionable requirements are present. Output a JSON
-        object with a top-level key "rules" whose value is a list of
-        manufacturing rule objects.
-        
-        {format_instructions}
-        
-        Return ONLY the JSON object."""
-        
-        rule_human_prompt = """Extract all manufacturing rules from this text chunk.
-
-        Text Chunk:
-        {text_chunk}
-        
-        Document Context:
-        - Industry: {industry_sector}
-        - Domain: {technical_domain}
-        - Document Type: {document_type}
-        
-        RAG Context (similar rules):
-        {rag_context}
-        
-        Manufacturing Keywords Detected: {manufacturing_keywords}
-        
-        Extract every manufacturing rule present in this chunk. Return a JSON object with a top-level key `rules` whose value is a list of rule objects. Each rule object must include at least `rule_text` and `confidence_score`. Optional fields (feature, object, operator, value, unit, tolerance) can be empty or null if not present. Do NOT invent numeric values. If no rules found, return {{"rules": []}} and nothing else."""        
-        # Single-rule chain kept for backwards compatibility in callers that
-        # still expect one rule per chunk.
+        # Single extraction chain - LLM output flows verbatim to JSON
         self.rule_extraction_chain = ChatPromptTemplate.from_messages([
             SystemMessagePromptTemplate.from_template(rule_system_prompt),
             HumanMessagePromptTemplate.from_template(rule_human_prompt)
         ]) | self.llm | self.rule_parser
-
-        # Multi-rule chain used by the new high-recall extraction path.
-        # Use the tolerant candidate parser so we don't lose partial rule objects.
-        self.rule_list_extraction_chain = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(rule_system_prompt),
-            HumanMessagePromptTemplate.from_template(rule_human_prompt)
-        ]) | self.llm | self.rule_candidate_list_parser
-        
-        # Rule enhancement chain for quality improvement
-        enhancement_system_prompt = """You are a manufacturing standards expert. Your task is to enhance and validate extracted rules.
-        
-        Enhancement objectives:
-        1. Improve specificity and clarity
-        2. Add missing technical details
-        3. Standardize terminology
-        4. Validate numeric values and units
-        5. Add relevant constraints
-        6. Improve manufacturing relevance
-        
-        Maintain accuracy to the original source while enhancing quality."""
-        
-        enhancement_human_prompt = """Enhance this extracted manufacturing rule:
-
-        Original Rule:
-        {original_rule}
-        
-        Document Context:
-        {document_context}
-        
-        Similar Rules from Database:
-        {similar_rules}
-        
-        {format_instructions}
-        
-        Provide enhanced rule with improved quality and specificity."""
-        
-        self.enhancement_chain = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(enhancement_system_prompt),
-            HumanMessagePromptTemplate.from_template(enhancement_human_prompt)
-        ]) | self.llm | self.rule_parser
-
-        # Bulk/raw extraction chain - returns a flat list of rule texts for
-        # high-recall extraction modes. This is intentionally lightweight
-        # and favors recall over strict structured output.
-        bulk_system_prompt = """You are a manufacturing engineering expert. 
-        Your task is to identify ALL distinct, actionable manufacturing rules or guidelines present in the given text. 
-        Favor recall: return every plausible rule even if some are partial or lack numeric detail. 
-        Do NOT truncate longer rules; keep full sentences. Remove page numbers, headers, and leading prefixes like 'Note:' or 'Tip:'. Do not deduplicate inside the model.
-        Output a JSON object with the following format:
-        {{"rules": [{{"text": "<rule text>", "confidence_score": 0.0}}, ...]}}
-        If there are no rules, return {{"rules": []}} and do not output any extra text or commentary.
-        """
-
-        bulk_human_prompt = """Extract every manufacturing rule sentence or brief guideline from the following text chunk. 
-
-        Text Chunk:
-        {text_chunk}
-
-        Return EXACTLY the JSON object described in the system prompt. Ensure each rule text is a single concise sentence and avoid including page headers or list markers."""
-
-        self.bulk_extraction_chain = ChatPromptTemplate.from_messages([
-            SystemMessagePromptTemplate.from_template(bulk_system_prompt),
-            HumanMessagePromptTemplate.from_template(bulk_human_prompt)
-        ]) | self.llm | self.raw_rule_list_parser
     
     def _initialize_quality_assessors(self):
         """Initialize quality assessment tools."""
@@ -1172,140 +1030,34 @@ class EnhancedRuleEngine:
     def extract_rules_from_chunk(
         self,
         text_chunk: str,
-        document_context: DocumentContext,
+        document_context: Any = None,
         rag_context: List[Dict] = None,
         *,
         _retry: bool = True,
-    ) -> Tuple[List[ManufacturingRule], int]:
-        """Extract multiple rules from a single text chunk.
-
-        Returns a tuple (accepted_rules, candidate_count) where candidate_count
-        represents how many candidate rule items were returned by the LLM or
-        heuristic path for diagnostics.
+    ) -> Tuple[List[Dict[str, Any]], int]:
+        """Extract multiple rules from chunk - LLM output flows verbatim to JSON.
+        NO post-processing, NO validation, NO mutation.
         """
-        """Extract multiple rules from a single text chunk.
-
-        This is the new high-recall path. It reuses the same prompts as the
-        legacy single-rule flow but parses into a ``ManufacturingRuleList``
-        container so several rules can be returned for a single chunk.
-        """
-
-        if not self._is_high_value_chunk(text_chunk):
-            enhanced_logger.debug("Skipping low-value chunk", chunk_preview=text_chunk[:50])
-            return [], 0
-
-        # NOTE: We deliberately skip the enhancement loop here to avoid
-        # multiplying API calls by the number of rules per chunk. Instead we
-        # rely on quality thresholds and downstream post-processing.
 
         try:
             if not self._respect_tpd_limit():
                 return [], 0
 
-            chunk_lower = text_chunk.lower()
-            detected_keywords: List[str] = []
-            for _, keywords in self.manufacturing_keywords.items():
-                detected_keywords.extend([kw for kw in keywords if kw in chunk_lower])
-
-            rag_context_str = ""
-            if rag_context:
-                rag_context_str = "\n".join(
-                    [f"- {ctx.get('text', '')[:100]}..." for ctx in rag_context[:3]]
-                )
-
             self._sleep_for_throttle()
-            # Parse tolerant candidate outputs (may be partial/optional fields)
-            candidate_list: ManufacturingRuleCandidateList = self.rule_list_extraction_chain.invoke({
+            
+            # Call LLM with mega-prompt
+            result = self.rule_extraction_chain.invoke({
                 'text_chunk': text_chunk,
-                'industry_sector': document_context.industry_sector,
-                'technical_domain': document_context.technical_domain,
-                'document_type': document_context.document_type,
-                'rag_context': rag_context_str,
-                'manufacturing_keywords': ", ".join(detected_keywords),
-                'format_instructions': self.rule_candidate_list_parser.get_format_instructions(),
             })
 
             if self.config.api_request_delay:
                 time.sleep(self.config.api_request_delay)
 
-            # Convert candidates into full ManufacturingRule objects with defaults
-            accepted: List[ManufacturingRule] = []
-            for idx, candidate in enumerate(candidate_list.rules):
-                try:
-                    # Fill defaults conservatively; do not invent numbers
-                    confidence = float(candidate.confidence_score or 0.5)
-                    m = ManufacturingRule(
-                        rule_text=candidate.rule_text[:500],
-                        rule_category=(candidate.rule_category or ManufacturingCategory.GENERAL),
-                        rule_type=(candidate.rule_type or RuleType.GENERAL),
-                        primary_feature=(candidate.primary_feature or ""),
-                        secondary_feature="",
-                        primary_object=(candidate.primary_object or ""),
-                        secondary_object="",
-                        operator=(candidate.operator or ""),
-                        value=candidate.value if candidate.value is not None else None,
-                        unit=(candidate.unit if isinstance(candidate.unit, str) else ", ".join(candidate.unit) if isinstance(candidate.unit, list) else str(candidate.unit) if candidate.unit else ""),
-                        tolerance=None,
-                        confidence_score=confidence,
-                        confidence_level=ConfidenceLevel.HIGH if confidence>=0.8 else ConfidenceLevel.MEDIUM if confidence>=0.6 else ConfidenceLevel.LOW,
-                        correctness_tag=CorrectnessTag.NEEDS_REVIEW,
-                        manufacturing_relevance=0.5,
-                        source_document="",
-                        document_section="",
-                        extraction_method="langchain_structured_candidate",
-                    )
-                    # Compute quick derived fields
-                            # Canonicalize rule text for consistency
-                    text_clean = self._canonicalize_rule_text(candidate.rule_text)
-                    m.readability_score = flesch_reading_ease(text_clean)
-                    m.complexity_score = len(detected_keywords) / len(text_clean.split()) if text_clean.split() else 0
-                    m.rule_text = text_clean[:500]
-
-                    # Apply quality filter conservatively
-                    if self._is_rule_quality_acceptable(m):
-                        accepted.append(m)
-                    else:
-                        # Keep lower-quality candidates if we are in raw/full coverage modes
-                        if self.config.allow_bulk_extraction or self.config.extraction_mode == 'raw':
-                            accepted.append(m)
-                except Exception as e:
-                    enhanced_logger.warning("Failed to convert candidate to ManufacturingRule", index=idx, error=str(e))
-
-            enhanced_logger.debug("Candidates converted", candidates=len(candidate_list.rules), accepted=len(accepted))
-
-            # Record per-chunk stats for diagnostics
-            per_chunk_stats = {
-                'chunk_index': 0,  # Will be set by caller
-                'token_count': 0,  # Will be set by caller
-                'manufacturing_score': 0,  # Will be set by caller
-                'candidate_count': len(candidate_list.rules),
-                'accepted_count': len(accepted),
-            }
+            # Extract rules list from LLM response - NO MUTATION
+            rules = result.get('rules', []) if isinstance(result, dict) else []
             
-            # If configured for high-recall, run lightweight raw/bulk extraction
-            if self.config.allow_bulk_extraction or self.config.extraction_mode == 'raw':
-                try:
-                    raw_rules = self.extract_raw_rules_from_chunk(text_chunk, document_context, rag_context)
-                    # Merge: prefer structured rules when duplicates exist
-                    existing_texts = {r.rule_text.strip().lower() for r in accepted}
-                    for rr in raw_rules:
-                        rr.rule_text = self._canonicalize_rule_text(rr.rule_text)
-                        if rr.rule_text.strip().lower() in existing_texts:
-                            continue
-                        accepted.append(rr)
-                except Exception as e:
-                    enhanced_logger.warning("Raw bulk extraction failed", error=str(e))
-
-            # If nothing found and local heuristics enabled, fall back to a
-            # simple rule-at-sentence heuristic (no LLM cost) to boost recall.
-            if not accepted and self.config.enable_local_heuristic:
-                try:
-                    heur_rules = self._heuristic_extract_from_chunk(text_chunk, document_context)
-                    accepted.extend(heur_rules)
-                except Exception as e:
-                    enhanced_logger.warning("Local heuristic extraction failed", error=str(e))
-
-            return accepted, len(candidate_list.rules)
+            return rules, len(rules)
+            
         except Exception as e:
             self._update_tpd_from_error(e)
             if _retry and self._ensure_llm_available(e):
@@ -1316,7 +1068,7 @@ class EnhancedRuleEngine:
                     _retry=False,
                 )
             enhanced_logger.error(
-                "Rule list extraction failed",
+                "Rule extraction failed",
                 chunk_preview=text_chunk[:100],
                 error=str(e),
             )
@@ -1407,182 +1159,71 @@ class EnhancedRuleEngine:
             enhanced_logger.error("Raw rule extraction failed", chunk_preview=text_chunk[:100], error=str(e))
             return []
     
-    async def extract_rules_parallel(self, text: str, filename: str = "") -> RuleExtractionResult:
+    async def extract_rules_parallel(self, text: str, filename: str = "") -> Dict[str, Any]:
         """Extract rules using parallel processing for production speed."""
         
         start_time = datetime.utcnow()
         token_usage = {'input_tokens': 0, 'output_tokens': 0}
         
         try:
-            # Step 1: Analyze document context
-            document_context = self.analyze_document_context(text)
-            token_usage['input_tokens'] += self.count_tokens(text[:2000])
-            
-            # Step 2: Semantic chunking
+            # Semantic chunking only
             chunks = self.semantic_chunk_text(text)
             enhanced_logger.info("Document chunked", 
                                chunk_count=len(chunks),
                                total_tokens=sum(c['token_count'] for c in chunks))
             
-            # Step 3: Rule extraction (multi-rule per chunk)
-            rules: List[ManufacturingRule] = []
-            per_chunk_stats_list: List[Dict[str, Any]] = []
-            tpd_aborted = False
-            tpd_blocked_until: Optional[float] = None
-
-            document_cache_id = ""
-            if self._chunk_cache is not None:
-                document_cache_id = self._document_cache_id(filename=filename or "ad_hoc.txt", text=text)
+            # Extract rules from all chunks - NO POST-PROCESSING
+            all_rules: List[Dict[str, Any]] = []
 
             for chunk_data in chunks:
-                chunk_index = len(per_chunk_stats_list)
                 chunk_text = chunk_data['text']
 
-                # Resume: reuse cached chunk extraction results when available.
-                if self._chunk_cache is not None and self.config.resume_from_cache:
-                    cached = self._chunk_cache.get(document_id=document_cache_id, chunk_index=chunk_index)
-                    if cached and cached.get("chunk_text_hash") == self._chunk_text_hash(chunk_text):
-                        cached_rules = cached.get("rules") or []
-                        cached_candidate_count = int(cached.get("candidate_count") or 0)
-                        restored: List[ManufacturingRule] = []
-                        for item in cached_rules:
-                            try:
-                                restored.append(ManufacturingRule(**item))
-                            except Exception:
-                                continue
-
-                        for rule in restored:
-                            rule.source_document = filename
-                            rules.append(rule)
-
-                        per_chunk_stats_list.append({
-                            'chunk_index': chunk_index,
-                            'token_count': chunk_data.get('token_count', 0),
-                            'manufacturing_score': chunk_data.get('manufacturing_score', 0),
-                            'candidate_count': cached_candidate_count,
-                            'accepted_count': len(restored),
-                            'cached': True,
-                        })
-                        continue
-
-                # If we've hit the Groq daily TPD window, stop further expensive calls
                 if not self._respect_tpd_limit():
-                    tpd_aborted = True
-                    tpd_blocked_until = self._tpd_blocked_until
-                    enhanced_logger.warning("TPD window active, aborting remaining chunks to avoid 429s")
+                    enhanced_logger.warning("TPD window active, stopping extraction")
                     break
 
-                rag_context: List[Dict[str, Any]] = []
-                if self.vector_manager and self.config.enable_rag_enhancement:
-                    rag_context = self.vector_manager.similarity_search(
-                        chunk_data['text'],
-                        top_k=self.config.rag_top_k,
-                        score_threshold=self.config.rag_score_threshold,
-                    )
-                    # Local rerank to improve relevance ordering
-                    rag_context = self._rerank_rag_context(
-                        chunk_data['text'],
-                        rag_context,
-                        top_k=min(self.config.rag_top_k, 8),
-                    )
+                chunk_rules, _ = self.extract_rules_from_chunk(chunk_text, None, None)
+                all_rules.extend(chunk_rules)
 
-                chunk_rules, candidate_count = self.extract_rules_from_chunk(
-                    chunk_text,
-                    document_context,
-                    rag_context,
-                )
-
-                for rule in chunk_rules:
-                    rule.source_document = filename
-                    rules.append(rule)
-
-                # Collect per-chunk diagnostics
-                per_chunk_stats_list.append({
-                    'chunk_index': chunk_index,
-                    'token_count': chunk_data.get('token_count', 0),
-                    'manufacturing_score': chunk_data.get('manufacturing_score', 0),
-                    'candidate_count': candidate_count,
-                    'accepted_count': len(chunk_rules),
-                    'cached': False,
-                })
-
-                # Persist chunk results for resume.
-                if self._chunk_cache is not None and (self.config.enable_chunk_cache or self.config.resume_from_cache):
-                    try:
-                        self._chunk_cache.set(
-                            document_id=document_cache_id,
-                            chunk_index=chunk_index,
-                            payload={
-                                'chunk_text_hash': self._chunk_text_hash(chunk_text),
-                                'candidate_count': int(candidate_count),
-                                'rules': [r.dict() for r in chunk_rules],
-                                'model': self.config.groq_model,
-                                'extraction_mode': self.config.extraction_mode,
-                                'created_at': datetime.utcnow().isoformat(),
-                            },
-                        )
-                    except Exception as e:  # pragma: no cover
-                        enhanced_logger.warning("chunk_cache_write_failed", error=str(e))
-
-                # Soft guard: avoid unbounded growth before post-processing
-                if len(rules) >= self.config.max_rules_per_document * 3:
-                    break
-
-            # Step 4: Post-processing with detailed stats
-            rules, post_stats = self._post_process_rules(rules)
-            
             # Calculate processing time
             processing_time = (datetime.utcnow() - start_time).total_seconds()
             
-            extraction_stats: Dict[str, Any] = {
-                'total_chunks': len(chunks),
-                'processed_chunks': len(per_chunk_stats_list),
-                'rules_extracted': len(rules),
-                'avg_confidence': sum(r.confidence_score for r in rules) / len(rules) if rules else 0,
-                'manufacturing_density': document_context.manufacturing_density,
-                'high_confidence_rules': len([r for r in rules if r.confidence_level == ConfidenceLevel.HIGH]),
-                'raw_rules_before_postprocessing': post_stats.get('raw_rules_before_postprocessing', 0),
-                'rules_after_deduplication': post_stats.get('rules_after_deduplication', 0),
-                'rules_after_quality_filter': post_stats.get('rules_after_quality_filter', 0),
-                'rules_after_clustering': post_stats.get('rules_after_clustering', 0),
-                'rules_before_cap': post_stats.get('rules_before_cap', 0),
-                'max_rules_cap': post_stats.get('max_rules_cap', int(self.config.max_rules_per_document)),
-                'hit_rule_cap': post_stats.get('hit_rule_cap', False),
-                'per_chunk_stats': per_chunk_stats_list if 'per_chunk_stats_list' in locals() else [],
-                'tpd_aborted': bool(tpd_aborted),
-                'tpd_blocked_until': tpd_blocked_until,
+            # Create output structure
+            output = {
+                'source_pdf': filename,
+                'rule_count': len(all_rules),
+                'rules': all_rules,
+                'processing_time': processing_time,
+                'chunks_processed': len(chunks)
             }
-
-            if tpd_aborted:
-                raw_before = int(extraction_stats.get('raw_rules_before_postprocessing') or 0)
-                extraction_stats['status'] = 'partial_rate_limited' if raw_before > 0 else 'rate_limited'
-                extraction_stats['aborted_reason'] = 'tpd'
-
-            # Create result
-            result = RuleExtractionResult(
-                rules=rules,
-                document_metadata=document_context.dict(),
-                extraction_stats=extraction_stats,
-                processing_time=processing_time,
-                token_usage=token_usage
-            )
+            
+            # Save to JSON file
+            output_dir = Path('output')
+            output_dir.mkdir(exist_ok=True)
+            
+            pdf_name = Path(filename).stem if filename else 'untitled'
+            output_file = output_dir / f"{pdf_name}.json"
+            
+            with open(output_file, 'w', encoding='utf-8') as f:
+                json.dump(output, f, indent=2, ensure_ascii=False)
             
             enhanced_logger.info("Rule extraction completed",
-                               rules_count=len(rules),
+                               rules_count=len(all_rules),
                                processing_time=processing_time,
-                               avg_confidence=result.extraction_stats['avg_confidence'])
+                               output_file=str(output_file))
             
-            return result
+            return output
             
         except Exception as e:
             enhanced_logger.error("Rule extraction failed", error=str(e))
-            return RuleExtractionResult(
-                rules=[],
-                document_metadata={},
-                extraction_stats={'error': str(e)},
-                processing_time=(datetime.utcnow() - start_time).total_seconds(),
-                token_usage=token_usage
-            )
+            return {
+                'source_pdf': filename,
+                'rule_count': 0,
+                'rules': [],
+                'processing_time': 0,
+                'chunks_processed': 0,
+                'error': str(e)
+            }
     
     def _post_process_rules(
         self,
@@ -2066,26 +1707,10 @@ class EnhancedRuleEngine:
 
     def _result_to_dict(
         self,
-        result: RuleExtractionResult,
+        result: Dict[str, Any],
         *,
         fallback_filename: str = "ad_hoc.txt",
     ) -> Dict[str, Any]:
-        serialized_rules = [rule.dict() for rule in result.rules]
-        avg_confidence = result.extraction_stats.get('avg_confidence', 0.0)
-
-        status = result.extraction_stats.get('status')
-        if not status:
-            status = 'success' if serialized_rules else result.extraction_stats.get('status', 'no_rules')
-
-        payload = {
-            'filename': result.document_metadata.get('filename', fallback_filename) if isinstance(result.document_metadata, dict) else fallback_filename,
-            'status': status,
-            'rules': serialized_rules,
-            'rule_count': len(serialized_rules),
-            'avg_confidence': avg_confidence,
-            'processing_time': result.processing_time,
-            'document_metadata': result.document_metadata,
-            'extraction_stats': result.extraction_stats,
-            'token_usage': result.token_usage,
-        }
-        return payload
+        # result is already a dict from extract_rules_parallel
+        # Just return it as-is since it's already in the correct format
+        return result
