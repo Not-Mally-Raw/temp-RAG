@@ -56,10 +56,15 @@ logger = logging.getLogger(__name__)
 
 
 class RuleExtractionSettings(BaseSettings):
-    """Global settings used across the fast extraction pipeline."""
+    """Global settings used across the fast extraction pipeline.
+
+    The model used for Level 1 rule extraction is controlled by the
+    GROQ_MODEL environment variable. If that is not provided, we
+    default to the GPT‑OSS‑20B family model identifier.
+    """
 
     groq_api_key: str = Field(default="")
-    groq_model: str = Field(default="meta-llama/llama-4-scout-17b-16e-instruct")
+    groq_model: str = Field(default_factory=lambda: os.getenv("GROQ_MODEL", "gpt-oss-20b-latest"))
     temperature: float = Field(default=0.1)
     max_output_tokens: int = Field(default=2048)
 

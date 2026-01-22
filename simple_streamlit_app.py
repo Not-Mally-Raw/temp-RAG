@@ -16,6 +16,21 @@ from core.rule_extraction import RuleExtractionSettings
 st.set_page_config(page_title="DFM Rule Compiler", layout="wide")
 st.title("DFM Rule Compiler")
 
+# Always start with a clean Streamlit state so previous runs do not
+# leak cached data or session variables into a fresh app launch.
+try:
+    st.cache_data.clear()
+except Exception:
+    pass
+try:
+    st.cache_resource.clear()
+except Exception:
+    pass
+try:
+    st.session_state.clear()
+except Exception:
+    pass
+
 load_dotenv(override=False)
 
 st.sidebar.header("Settings")
@@ -25,7 +40,8 @@ high_recall = st.sidebar.checkbox("High recall (raw/bulk)", value=True)
 @st.cache_resource
 def get_system():
     key = os.getenv("GROQ_API_KEY")
-    model = os.getenv("GROQ_MODEL", EnhancedConfig().groq_model)
+    # Keep Level 1 extraction model consistent with GROQ_MODEL / GPT‑OSS‑20B
+    model = os.getenv("GROQ_MODEL", "gpt-oss-20b-latest")
 
     pipeline_settings = RuleExtractionSettings(groq_api_key=key, groq_model=model)
     enhanced_config = EnhancedConfig(groq_api_key=key, recall_mode=high_recall)

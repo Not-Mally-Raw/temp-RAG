@@ -37,6 +37,21 @@ def _clear_streamlit_component_cache() -> None:
 
 _clear_streamlit_component_cache()
 
+# Ensure a clean Streamlit cache/state on each fresh server start so
+# that old variables or cached resources do not leak between runs.
+try:
+    st.cache_data.clear()
+except Exception:  # pragma: no cover - best effort
+    pass
+try:
+    st.cache_resource.clear()
+except Exception:  # pragma: no cover - best effort
+    pass
+try:
+    st.session_state.clear()
+except Exception:  # pragma: no cover - best effort
+    pass
+
 # Load environment variables
 from dotenv import load_dotenv
 load_dotenv()
@@ -107,10 +122,9 @@ def initialize_system():
         st.stop()
     
     try:
-        preferred_model = os.getenv(
-            "GROQ_MODEL",
-            "meta-llama/llama-4-scout-17b-16e-instruct",
-        )
+        # Single source of truth for the Groq model: always respect
+        # GROQ_MODEL, and default to the GPT‑OSS‑20B family when not set.
+        preferred_model = os.getenv("GROQ_MODEL", "gpt-oss-20b-latest")
 
         # Align concurrency / model choices with Groq limits for smoother runs.
         pipeline_settings = RuleExtractionSettings(

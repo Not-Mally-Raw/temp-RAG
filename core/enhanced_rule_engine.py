@@ -9,6 +9,7 @@ import logging
 import re
 import hashlib
 import time
+import os
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple, Union
 from datetime import datetime
@@ -419,10 +420,16 @@ class DocumentContext(BaseModel):
     quality_standards: List[str] = Field(default_factory=list, description="Quality standards referenced")
 
 class EnhancedConfig(BaseSettings):
-    """Production configuration with validation."""
+    """Production configuration with validation.
+
+    Level 1 (rule extraction) always takes its Groq model from the
+    GROQ_MODEL environment variable when available. If that variable is
+    not set, we default to the GPT‑OSS‑20B family identifier so that
+    all callers (CLI, Streamlit, batch) converge on the same model.
+    """
 
     # LLM Configuration
-    groq_model: str = "meta-llama/llama-4-scout-17b-16e-instruct"
+    groq_model: str = os.getenv("GROQ_MODEL", "gpt-oss-20b-latest")
     groq_api_key: str = ""
     max_tokens: int = 4096
     temperature: float = 0.05
