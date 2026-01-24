@@ -23,16 +23,25 @@ RULE TEXT:
 "{rule_text}"
 
 -------------------------------------------------------------------------------
-CRITICAL DEFINITIONS
+CRITICAL DEFINITIONS (DO NOT RELAX)
 
 Quantifiable = The rule can be written as a direct numeric or logical constraint
-using known physical quantities (e.g., A >= B, A <= 5 mm).
+using known physical quantities OR as a formal tolerance specification.
+
+Quantifiable INCLUDES:
+- Explicit numeric limits (>=, <=, =)
+- Explicit tolerance specifications (±, plus/minus, max/min limits)
+- Any rule that could be represented as a tolerance object
 
 NOT Quantifiable if:
-- It is advisory ("avoid", "recommended", "should consider")
+- It is advisory with NO numeric meaning ("avoid", "recommended", "should consider")
 - It describes process difficulty or quality ("hard to plate", "may trap")
-- It requires conditional logic not expressible as one equation
+- It requires conditional logic not expressible as a single formal rule
   (e.g., "whichever is larger")
+
+IMPORTANT:
+- A rule MAY be quantifiable even if it is NOT a geometry rule.
+- Tolerance rules are quantifiable by definition.
 
 GEOMETRY REQUIRED if:
 - The rule describes distance, spacing, clearance, proximity, or location
@@ -42,6 +51,7 @@ GEOMETRY REQUIRED if:
 TOLERANCE REQUIRED if:
 - The rule specifies allowable variation (±, plus/minus, tolerance, limits)
 - Tolerance is a SPECIFICATION concept, NOT a geometry or feature attribute
+- If tolerance is present, requires_tolerance MUST be true
 
 -------------------------------------------------------------------------------
 OUTPUT RULES (STRICT)
@@ -49,6 +59,7 @@ OUTPUT RULES (STRICT)
 - Use simple nouns for object and attribute
 - If geometry is required, DO NOT invent an attribute
 - If tolerance is required, DO NOT encode it as a feature attribute
+- Do NOT downgrade tolerance rules to advisory if numeric limits are given
 - Reasoning must justify ALL decisions
 
 -------------------------------------------------------------------------------
@@ -77,7 +88,7 @@ OUTPUT JSON ONLY
 }}
 
 -------------------------------------------------------------------------------
-FEW-SHOT EXAMPLES
+FEW-SHOT EXAMPLES (AUTHORITATIVE)
 
 Rule:
 "Bends should be toleranced plus or minus one-half degree."
@@ -88,7 +99,7 @@ Output:
   "object": "Bend",
   "attribute": "Angle",
   "rule_type": "advisory",
-  "is_quantifiable": false,
+  "is_quantifiable": true,
   "requires_geometry": false,
   "geometry_relation": null,
   "requires_tolerance": true,
@@ -99,7 +110,7 @@ Output:
     "minus": 0.5,
     "unit": "degree"
   }},
-  "reasoning": "The rule defines an allowable angular variation, which is a tolerance specification, not a direct geometric constraint."
+  "reasoning": "The rule specifies an allowable angular variation, which is a formal tolerance specification. Although phrased as advisory, it is numerically defined and therefore quantifiable. No geometric relationship is involved."
 }}
 
 Rule:
@@ -123,7 +134,6 @@ Output:
   "reasoning": "The rule specifies a minimum spatial distance between two features, which requires explicit geometry modeling."
 }}
 """
-
 
 # ==============================================================================
 # STAGE 2: STRICT SCHEMA MAPPING (DEFERRAL AWARE)

@@ -12,7 +12,7 @@ except ImportError:
 from pipeline import run_pipeline
 
 # Configuration
-INPUT_FILE = r"tests\geo.json"
+INPUT_FILE = r"C:\Users\Rahul\Downloads\all_rules_consolidated_20260123_121024.json"
 
 def load_rules(filepath):
     """
