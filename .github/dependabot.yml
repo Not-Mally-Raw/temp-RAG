@@ -1,0 +1,21 @@
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    allow:
+      - dependency-type: "direct"
+    ignore:
+      - dependency-name: "langchain-core"
+        versions: [">=0.3.0"]
+      - dependency-name: "langsmith"
+        versions: [">=0.2.0"]
+    groups:
+      minor-patches:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+          - "patch"

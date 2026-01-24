@@ -1,0 +1,169 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: [3.10, 3.11]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python ${{ matrix.python-version }}
+      uses: actions/setup-python@v4
+      with:
+        python-version: ${{ matrix.python-version }}
+
+    - name: Cache pip dependencies
+      uses: actions/cache@v3
+      with:
+        path: ~/.cache/pip
+        key: ${{ runner.os }}-pip-${{ hashFiles('**/requirements.txt') }}
+        restore-keys: |
+          ${{ runner.os }}-pip-
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+
+    - name: Download spaCy model
+      run: |
+        python -m spacy download en_core_web_sm
+
+    - name: Run tests with pytest
+      run: |
+        pytest tests/test_production_system.py -v --cov=core --cov-report=xml --cov-report=html
+
+    - name: Upload coverage to Codecov
+      uses: codecov/codecov-action@v3
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+
+    - name: Run linting
+      run: |
+        pip install flake8 black isort
+        flake8 core/ tests/ --count --select=E9,F63,F7,F82 --show-source --statistics
+        black --check core/ tests/
+        isort --check-only core/ tests/
+
+  build-and-deploy:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Docker Buildx
+      uses: actions/docker-setup-buildx-action@v3
+
+    - name: Log in to Docker Hub
+      uses: docker/login-action@v3
+      with:
+        username: ${{ secrets.DOCKER_USERNAME }}
+        password: ${{ secrets.DOCKER_PASSWORD }}
+
+    - name: Build and push Docker image
+      uses: actions/docker-build-push-action@v5
+      with:
+        context: .
+        push: true
+        tags: |
+          ${{ secrets.DOCKER_USERNAME }}/manufacturing-rule-extractor:latest
+          ${{ secrets.DOCKER_USERNAME }}/manufacturing-rule-extractor:${{ github.sha }}
+
+  performance-test:
+    needs: test
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push'
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Set up Python 3.10
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r requirements.txt
+        python -m spacy download en_core_web_sm
+
+    - name: Run performance benchmarks
+      run: |
+        python -c "
+        from core.production_system import ProductionSystem
+        import time
+
+        # Initialize system
+        system = ProductionSystem(use_qdrant=False)
+
+        # Test with sample document (create a simple test)
+        test_text = '''
+        Sheet metal thickness shall not exceed 3.0 mm for bending operations.
+        Minimum bend radius is 1.5 times material thickness.
+        Hole diameter must be at least 2.0 mm larger than fastener size.
+        Surface finish requirements: Ra 1.6 maximum for visible surfaces.
+        '''
+
+        start_time = time.time()
+        results = system.process_document_text(test_text, 'test_doc.pdf')
+        processing_time = time.time() - start_time
+
+        print(f'Processing time: {processing_time:.2f}s')
+        print(f'Rules extracted: {len(results.rules)}')
+        print(f'Average confidence: {sum(r.confidence_score for r in results.rules) / len(results.rules) if results.rules else 0:.2f}')
+
+        # Performance assertions
+        assert processing_time < 5.0, f'Processing too slow: {processing_time}s'
+        assert len(results.rules) > 0, 'No rules extracted'
+        assert all(r.confidence_score > 0.5 for r in results.rules), 'Low confidence rules detected'
+        "
+
+  security-scan:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Run safety check
+      run: |
+        pip install safety
+        safety check --full-report
+
+    - name: Run bandit security linter
+      run: |
+        pip install bandit
+        bandit -r core/ -f json -o bandit-report.json || true
+        # Check if any high-severity issues found
+        if [ $(jq '.results | map(select(.issue_severity == "High")) | length' bandit-report.json) -gt 0 ]; then
+          echo "High-severity security issues found!"
+          exit 1
+        fi
+
+  dependency-check:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Check for dependency updates
+      run: |
+        pip install pip-tools
+        pip-compile --dry-run requirements.txt --output-file requirements-new.txt
+        if ! diff requirements.txt requirements-new.txt; then
+          echo "Dependencies are outdated. Please update requirements.txt"
+          echo "Run: pip-compile requirements.in > requirements.txt"
+          exit 1
+        fi
