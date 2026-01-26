@@ -5,71 +5,64 @@ from schema.feature_schema import features_dict
 from schema.tolerance_schema import TOLERANCE_TYPES, GDT_KEYWORDS
 from llm.prompts import TOLERANCE_PROMPT
 
-
-def resolve_tolerance(llm, rule_text: str, intent_input) -> str:
-    print("\n🔹 STAGE 2C: TOLERANCE RESOLUTION")
-
+def resolve_tolerance(llm, rule_text: str, intent_input) -> dict:
     # ------------------------------------------------------------------
-    # 1. Parse Intent (STRICT)
+    # STRICT INPUT NORMALIZATION
     # ------------------------------------------------------------------
-    if isinstance(intent_input, dict):
-        intent = intent_input
-    else:
+    if isinstance(intent_input, str):
         try:
             intent = json.loads(intent_input)
         except Exception:
-            return json.dumps({
+            return {
                 "status": "Failed",
                 "tolerance_valid": False,
-                "error_type": "InvalidInput",
                 "error": "Intent is not valid JSON"
-            })
+            }
+    else:
+        intent = intent_input
 
-    tolerance_context = intent.get("tolerance")
-    if not tolerance_context:
-        return json.dumps({
-            "status": "Failed",
-            "tolerance_valid": False,
-            "error_type": "MissingTolerance",
-            "error": "Tolerance resolver invoked without tolerance intent"
-        })
+    # --- FIX START ---
+    # OLD CODE (Broken):
+    # tolerance_context = intent.get("tolerance")
+    # if not tolerance_context: return Failed...
+
+    # NEW CODE (Robust):
+    # We pass the WHOLE intent as context, but we don't require 
+    # a pre-existing "tolerance" object.
+    tolerance_context = intent.get("tolerance") or {} 
+    # --- FIX END ---
 
     # ------------------------------------------------------------------
-    # 2. LLM FORMALIZATION
+    # LLM FORMALIZATION
     # ------------------------------------------------------------------
-    schema_context = features_dict.get("General", "")
-
+    # We use rule_text as the primary source of truth.
     prompt = TOLERANCE_PROMPT.format(
         rule_text=rule_text,
-        intent_json=json.dumps(tolerance_context, indent=2),
-        schema_context=schema_context
+        intent_json=json.dumps(intent, indent=2), # Pass full intent for context
+        schema_context=features_dict.get("General", "")
     )
 
-    try:
-        raw = llm.call(prompt)
-        if not isinstance(raw, str):
-            raw = str(raw)
+    raw = llm.call(prompt)
+    if not isinstance(raw, str):
+        raw = str(raw)
 
-        expression = (
-            raw.replace("```python", "")
-               .replace("```", "")
-               .strip()
-               .strip('"')
-               .strip("'")
-        )
+    expression = (
+        raw.replace("```python", "")
+           .replace("```", "")
+           .strip()
+           .strip('"')
+           .strip("'")
+    )
 
-        print(f"    🎚️  LLM Output: {expression}")
-
-    except Exception as e:
-        return json.dumps({
+    if not expression:
+        return {
             "status": "Failed",
             "tolerance_valid": False,
-            "error_type": "LLMFailure",
-            "error": str(e)
-        })
+            "error": "Empty tolerance expression"
+        }
 
     # ------------------------------------------------------------------
-    # 3. SEMANTIC TOLERANCE TYPE DETECTION (NO SCHEMA ASSUMPTIONS)
+    # SEMANTIC TOLERANCE TYPE DETECTION
     # ------------------------------------------------------------------
     parsed_type = None
 
@@ -85,45 +78,36 @@ def resolve_tolerance(llm, rule_text: str, intent_input) -> str:
     elif expression.startswith("GDT("):
         match = re.search(r"GDT\s*\(\s*([A-Za-z]+)", expression)
         if not match:
-            return json.dumps({
+            return {
                 "status": "Deferred",
                 "tolerance_valid": False,
-                "error_type": "MalformedGDT",
-                "error": "GD&T expression malformed but intent recognized"
-            })
+                "error": "Malformed GDT expression"
+            }
 
         gdt_type = match.group(1)
         if gdt_type not in GDT_KEYWORDS:
-            return json.dumps({
+            return {
                 "status": "Deferred",
                 "tolerance_valid": False,
-                "error_type": "UnsupportedGDTType",
-                "error": f"Recognized GD&T type '{gdt_type}' is not supported"
-            })
-
+                "error": f"Unsupported GD&T type: {gdt_type}"
+            }
+        
         parsed_type = "GDT"
 
-    # ------------------------------------------------------------------
-    # 4. FINAL GATE — SUPPORTED VS UNDERSTOOD
-    # ------------------------------------------------------------------
     if parsed_type not in TOLERANCE_TYPES:
-        return json.dumps({
+        return {
             "status": "Deferred",
             "tolerance_valid": False,
-            "error_type": "UnsupportedToleranceForm",
-            "error": (
-                f"Tolerance intent recognized but formalism "
-                f"'{expression}' is not supported"
-            )
-        })
+            "error": f"Unsupported tolerance formalism: {expression}"
+        }
 
     # ------------------------------------------------------------------
-    # 5. SUCCESS
+    # SUCCESS
     # ------------------------------------------------------------------
-    return json.dumps({
+    return {
         "status": "Success",
         "tolerance_valid": True,
         "formalism": "Tolerance",
         "equation": expression,
-        "reasoning": f"Resolved {parsed_type} tolerance specification."
-    }, indent=2)
+        "reasoning": f"Resolved {parsed_type} tolerance specification"
+    }

@@ -17,11 +17,10 @@ def self_validate(llm, formal_rule_str: str) -> dict:
         return {"is_valid": False, "issues": ["Invalid formal rule JSON"]}
 
     # ✅ ACCEPT DEFERRALS
-    if formal.get("formalism") == "null":
-        reason = formal.get("reasoning", "")
-        if "Deferred" in reason:
-            print("    ⏭️ Accepted (Deferred Rule)")
-            return {"is_valid": True, "issues": []}
+    if formal.get("status") == "Deferred":
+        print("    ⏭️ Accepted (Deferred Rule)")
+        return {"is_valid": True, "issues": []}
+
 
     domain = (
         formal.get("rule_json", {}).get("domain")

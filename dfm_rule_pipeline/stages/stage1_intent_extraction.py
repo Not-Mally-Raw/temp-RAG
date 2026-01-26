@@ -1,94 +1,113 @@
-# stages/stage1_intent_extraction.py
 import json
 from llm.prompts import INTENT_PROMPT
-from schema.feature_schema import features_dict
-
-
-def generate_domain_map(features):
-    domain_map = {}
-    for domain, schema_text in features.items():
-        if not schema_text:
-            continue
-        objects = []
-        parts = schema_text.split("Object:")
-        for part in parts[1:]:
-            lines = part.strip().split("\n")
-            if lines and lines[0].strip():
-                objects.append(lines[0].strip())
-        if objects:
-            domain_map[domain] = objects
-    return json.dumps(domain_map, indent=2)
-
+# We removed call_with_timeout import because we trust the client's infinite loop
 
 def extract_intent(llm, rule_text: str) -> dict:
-    """
-    Extracts intent from rule text.
-    RETURNS a parsed dict (never raw JSON).
-    Geometry versioning is DECLARED here, not validated.
-    """
-    print("\n🔹 STAGE 1: INTENT EXTRACTION")
+    print("🧠 extract_intent ENTERED")
+    print("🧠 rule_text:", rule_text)
 
-    domain_map_str = generate_domain_map(features_dict)
-
-    prompt = INTENT_PROMPT.format(
-        domain_context=domain_map_str,
-        rule_text=rule_text
-    )
+    # -------------------------------
+    # LLM CALL (BLOCKING & ROBUST)
+    # -------------------------------
+    # The llm.call() method now handles all retries, failovers (Groq->Cerebras),
+    # and wait loops internally. We just wait for the result.
+    
+    prompt = INTENT_PROMPT.format(rule_text=rule_text)
+    print("📤 INTENT PROMPT LENGTH:", len(prompt))
+    print("📤 CALLING LLM (intent)")
 
     try:
+        # No timeout wrapper. We wait until the client succeeds.
         raw = llm.call(prompt)
-        if not isinstance(raw, str):
-            raw = str(raw)
-        raw = raw.strip()
+    except Exception as e:
+        # This catches legitimate crashes (auth errors, etc), not timeouts.
+        print("❌ LLM FATAL ERROR:", e)
+        return _intent_fallback(f"LLM Call Failed: {e}")
 
-        # Strip fenced blocks
-        if "```" in raw:
-            for part in raw.split("```"):
-                p = part.strip()
-                if p.startswith("{") and p.endswith("}"):
-                    raw = p
-                    break
+    print("🧠 RAW LLM OUTPUT:", repr(raw))
 
-        print(f"    → Intent Output (raw): {raw[:400]}")
+    raw = str(raw).strip()
+    # print("🧠 RAW STRIPPED:", repr(raw)) # Optional debug
 
-        parsed = json.loads(raw)
+    # -------------------------------
+    # SAFE JSON EXTRACTION
+    # -------------------------------
+    def _safe_json_load(raw: str):
+        # print("🧠 JSON BEFORE LOAD:", repr(raw))
 
-        # -------------------------------------------------
-        # Enforce base intent contract
-        # -------------------------------------------------
-        required_keys = [
-            "domain",
-            "rule_type",
-            "is_quantifiable",
-            "requires_geometry",
-            "requires_tolerance",
-            "reasoning"
-        ]
-        for k in required_keys:
-            if k not in parsed:
-                raise ValueError(f"Missing key: {k}")
+        # HARD STRIP non-JSON junk
+        start = raw.find("{")
+        end = raw.rfind("}")
 
-        # -------------------------------------------------
-        # Geometry v2 defaults (DECLARATIVE ONLY)
-        # -------------------------------------------------
-        parsed.setdefault("geometry_version", "v1")
-        parsed.setdefault("geometry_scope", None)
+        if start == -1 or end == -1 or end <= start:
+            raise ValueError("No valid JSON object found")
 
-        return parsed
+        raw_json = raw[start:end + 1]
+
+        # print("🧠 JSON FINAL STRING:", raw_json)
+        return json.loads(raw_json)
+
+    try:
+        parsed = _safe_json_load(raw)
+
+        if not isinstance(parsed, dict):
+            raise TypeError("Top-level JSON is not an object")
+
+        # -------------------------------
+        # KEY NORMALIZATION
+        # -------------------------------
+        cleaned = {}
+        for k, v in parsed.items():
+            if isinstance(k, str):
+                k_clean = k.strip().strip('"').strip()
+            else:
+                k_clean = str(k)
+
+            cleaned[k_clean] = v
+
+        parsed = cleaned
+
+        # print("🧠 PARSED JSON TYPE:", type(parsed))
+        # print("🧠 PARSED JSON KEYS:", list(parsed.keys()))
 
     except Exception as e:
-        print(f"    ⚠️ Intent parsing failed: {e}")
-        return {
-            "domain": "General",
-            "object": None,
-            "attribute": None,
-            "rule_type": "advisory",
+        print("❌ INTENT PARSE FAILED:", e)
+        return _intent_fallback(f"Intent parse failure: {e}")
+
+    # -------------------------------
+    # STRUCTURAL NORMALIZATION
+    # -------------------------------
+    parsed.setdefault("geometry_relation", None)
+    parsed.setdefault("tolerance", None)
+    parsed.setdefault("attribute_constraint", None)
+    parsed.setdefault("reasoning", "")
+
+    # -------------------------------
+    # RULE INTENT CANONICALIZATION
+    # -------------------------------
+    parsed["rule_intent"] = {
+        "type": parsed.get("rule_type", "advisory"),
+        "is_quantifiable": bool(parsed.get("is_quantifiable", False)),
+        "requires_geometry": bool(parsed.get("requires_geometry", False)),
+        "requires_tolerance": bool(parsed.get("requires_tolerance", False)),
+    }
+
+    return parsed
+
+
+# -------------------------------------------------
+# FALLBACK (SINGLE SOURCE OF TRUTH)
+# -------------------------------------------------
+def _intent_fallback(reason: str) -> dict:
+    return {
+        "rule_intent": {
+            "type": "advisory",
             "is_quantifiable": False,
             "requires_geometry": False,
-            "requires_tolerance": False,
-            "geometry_version": "v1",
-            "geometry_scope": None,
-            "geometry_relation": None,
-            "tolerance": None,
-            "reasoning": f"Intent parsing failed: {str(e)}"
-        }
+            "requires_tolerance": False
+        },
+        "geometry_relation": None,
+        "tolerance": None,
+        "attribute_constraint": None,
+        "reasoning": reason
+    }
