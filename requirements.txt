@@ -23,7 +23,7 @@ spacy==3.7.2
 # Data Processing & Analysis
 pandas==2.2.2
 openpyxl==3.1.5
-numpy==1.26.4
+numpy==2.4.0
 scikit-learn==1.5.1
 # UI & Visualization
 streamlit==1.51.0
